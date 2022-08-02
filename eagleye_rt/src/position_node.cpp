@@ -28,75 +28,76 @@
  * Author MapIV Sekino
  */
 
-#include "ros/ros.h"
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
+#include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
-static rtklib_msgs::RtklibNav rtklib_nav;
-static eagleye_msgs::VelocityScaleFactor velocity_scale_factor;
-static eagleye_msgs::Distance distance;
-static eagleye_msgs::Heading heading_interpolate_3rd;
-static eagleye_msgs::Position enu_absolute_pos;
-static geometry_msgs::Vector3Stamped enu_vel;
-static sensor_msgs::NavSatFix fix;
-static ros::Publisher pub;
+static rtklib_msgs::msg::RtklibNav rtklib_nav;
+static geometry_msgs::msg::TwistStamped velocity;
+static eagleye_msgs::msg::StatusStamped velocity_status;
+static eagleye_msgs::msg::VelocityScaleFactor velocity_scale_factor;
+static eagleye_msgs::msg::Distance distance;
+static eagleye_msgs::msg::Heading heading_interpolate_3rd;
+static eagleye_msgs::msg::Position enu_absolute_pos;
+static geometry_msgs::msg::Vector3Stamped enu_vel;
+static nmea_msgs::msg::Gpgga gga;
+rclcpp::Publisher<eagleye_msgs::msg::Position>::SharedPtr pub;
 
 struct PositionParameter position_parameter;
 struct PositionStatus position_status;
 
-static std::string use_gnss_mode;
+std::string use_gnss_mode;
+static bool use_canless_mode;
 
-void rtklib_nav_callback(const rtklib_msgs::RtklibNav::ConstPtr& msg)
+rclcpp::Clock clock_(RCL_ROS_TIME);
+tf2_ros::Buffer tfBuffer_(std::make_shared<rclcpp::Clock>(clock_));
+
+void rtklib_nav_callback(const rtklib_msgs::msg::RtklibNav::ConstSharedPtr msg)
 {
-  rtklib_nav.header = msg->header;
-  rtklib_nav.tow = msg->tow;
-  rtklib_nav.ecef_pos = msg->ecef_pos;
-  rtklib_nav.ecef_vel = msg->ecef_vel;
-  rtklib_nav.status = msg->status;
+  rtklib_nav = *msg;
 }
 
-void velocity_scale_factor_callback(const eagleye_msgs::VelocityScaleFactor::ConstPtr& msg)
+void velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
 {
-  velocity_scale_factor.header = msg->header;
-  velocity_scale_factor.scale_factor = msg->scale_factor;
-  velocity_scale_factor.correction_velocity = msg->correction_velocity;
-  velocity_scale_factor.status = msg->status;
+  velocity = *msg;
 }
 
-void distance_callback(const eagleye_msgs::Distance::ConstPtr& msg)
+void velocity_status_callback(const eagleye_msgs::msg::StatusStamped::ConstSharedPtr msg)
 {
-  distance.header = msg->header;
-  distance.distance = msg->distance;
-  distance.status = msg->status;
+  velocity_status = *msg;
 }
 
-void heading_interpolate_3rd_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void velocity_scale_factor_callback(const eagleye_msgs::msg::VelocityScaleFactor::ConstSharedPtr msg)
 {
-  heading_interpolate_3rd.header = msg->header;
-  heading_interpolate_3rd.heading_angle = msg->heading_angle;
-  heading_interpolate_3rd.status = msg->status;
+  velocity_scale_factor = *msg;
 }
 
-void fix_callback(const sensor_msgs::NavSatFix::ConstPtr& msg)
+void distance_callback(const eagleye_msgs::msg::Distance::ConstSharedPtr msg)
 {
-  fix.header = msg->header;
-  fix.status = msg->status;
-  fix.latitude = msg->latitude;
-  fix.longitude = msg->longitude;
-  fix.altitude = msg->altitude;
-  fix.position_covariance = msg->position_covariance;
-  fix.position_covariance_type = msg->position_covariance_type;
+  distance = *msg;
 }
 
-void timer_callback(const ros::TimerEvent& e, tf2_ros::TransformListener* tfListener_, tf2_ros::Buffer* tfBuffer_)
+void heading_interpolate_3rd_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  geometry_msgs::TransformStamped transformStamped;
+  heading_interpolate_3rd = *msg;
+}
+
+void gga_callback(const nmea_msgs::msg::Gpgga::ConstSharedPtr msg)
+{
+  gga = *msg;
+}
+
+
+void on_timer()
+{
+  geometry_msgs::msg::TransformStamped transformStamped;
   try
   {
-    transformStamped = tfBuffer_->lookupTransform(position_parameter.tf_gnss_parent_flame, position_parameter.tf_gnss_child_flame, ros::Time(0));
+    transformStamped = tfBuffer_.lookupTransform(position_parameter.tf_gnss_parent_flame, position_parameter.tf_gnss_child_flame, tf2::TimePointZero);
 
     position_parameter.tf_gnss_translation_x = transformStamped.transform.translation.x;
     position_parameter.tf_gnss_translation_y = transformStamped.transform.translation.y;
@@ -108,81 +109,118 @@ void timer_callback(const ros::TimerEvent& e, tf2_ros::TransformListener* tfList
   }
   catch (tf2::TransformException& ex)
   {
-    ROS_WARN("%s", ex.what());
+    // RCLCPP_ERROR(this->get_logger(), "%s", ex.what());
     return;
   }
 }
 
-void enu_vel_callback(const geometry_msgs::Vector3Stamped::ConstPtr& msg)
+void enu_vel_callback(const geometry_msgs::msg::Vector3Stamped::ConstSharedPtr msg)
 {
-  enu_vel.header = msg->header;
-  enu_vel.vector = msg->vector;
+  if(use_canless_mode && !velocity_status.status.enabled_status) return;
+
+  eagleye_msgs::msg::StatusStamped velocity_enable_status;
+  if(use_canless_mode)
+  {
+    velocity_enable_status = velocity_status;
+  }
+  else
+  {
+    velocity_enable_status.header = velocity_scale_factor.header;
+    velocity_enable_status.status = velocity_scale_factor.status;
+  }
+
+  enu_vel = *msg;
   enu_absolute_pos.header = msg->header;
   enu_absolute_pos.header.frame_id = "base_link";
-
   if (use_gnss_mode == "rtklib" || use_gnss_mode == "RTKLIB") // use RTKLIB mode
-    position_estimate(rtklib_nav, velocity_scale_factor, distance, heading_interpolate_3rd, enu_vel, position_parameter, &position_status, &enu_absolute_pos);
+    position_estimate(rtklib_nav, velocity, velocity_enable_status, distance, heading_interpolate_3rd, enu_vel,
+      position_parameter, &position_status, &enu_absolute_pos);
   else if (use_gnss_mode == "nmea" || use_gnss_mode == "NMEA") // use NMEA mode
-    position_estimate(fix, velocity_scale_factor, distance, heading_interpolate_3rd, enu_vel, position_parameter, &position_status, &enu_absolute_pos);
-  
-  if(enu_absolute_pos.status.estimate_status == true)
+    position_estimate(gga, velocity, velocity_enable_status, distance, heading_interpolate_3rd, enu_vel,
+      position_parameter, &position_status, &enu_absolute_pos);
+  if (enu_absolute_pos.status.estimate_status == true)
   {
-    pub.publish(enu_absolute_pos);
+    pub->publish(enu_absolute_pos);
   }
   enu_absolute_pos.status.estimate_status = false;
-
-
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "position");
-  ros::NodeHandle n;
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("position");
+
+  // tfBuffer_(node->get_clock());
 
   std::string subscribe_rtklib_nav_topic_name = "/rtklib_nav";
-  std::string subscribe_navsatfix_topic_name = "/navsat/fix";
+  std::string subscribe_gga_topic_name = "/navsat/gga";
 
-  n.getParam("rtklib_nav_topic",subscribe_rtklib_nav_topic_name);
-  n.getParam("navsatfix_topic",subscribe_navsatfix_topic_name);
-  n.getParam("position/estimated_distance",position_parameter.estimated_distance);
-  n.getParam("position/separation_distance",position_parameter.separation_distance);
-  n.getParam("position/estimated_velocity_threshold",position_parameter.estimated_velocity_threshold);
-  n.getParam("position/outlier_threshold",position_parameter.outlier_threshold);
-  n.getParam("position/estimated_enu_vel_coefficient",position_parameter.estimated_enu_vel_coefficient);
-  n.getParam("position/estimated_position_coefficient",position_parameter.estimated_position_coefficient);
-  n.getParam("ecef_base_pos/x",position_parameter.ecef_base_pos_x);
-  n.getParam("ecef_base_pos/y",position_parameter.ecef_base_pos_y);
-  n.getParam("ecef_base_pos/z",position_parameter.ecef_base_pos_z);
-  n.getParam("tf_gnss_flame/parent", position_parameter.tf_gnss_parent_flame);
-  n.getParam("tf_gnss_flame/child", position_parameter.tf_gnss_child_flame);
-  n.getParam("use_gnss_mode",use_gnss_mode);
+  node->declare_parameter("rtklib_nav_topic",subscribe_rtklib_nav_topic_name);
+  node->declare_parameter("gga_topic",subscribe_gga_topic_name);
+  node->declare_parameter("position.estimated_distance",position_parameter.estimated_distance);
+  node->declare_parameter("position.separation_distance",position_parameter.separation_distance);
+  node->declare_parameter("position.estimated_velocity_threshold",position_parameter.estimated_velocity_threshold);
+  node->declare_parameter("position.outlier_threshold",position_parameter.outlier_threshold);
+  node->declare_parameter("position.estimated_enu_vel_coefficient",position_parameter.estimated_enu_vel_coefficient);
+  node->declare_parameter("position.estimated_position_coefficient",position_parameter.estimated_position_coefficient);
+  node->declare_parameter("ecef_base_pos.x",position_parameter.ecef_base_pos_x);
+  node->declare_parameter("ecef_base_pos.y",position_parameter.ecef_base_pos_y);
+  node->declare_parameter("ecef_base_pos.z",position_parameter.ecef_base_pos_z);
+  node->declare_parameter("tf_gnss_flame.parent", position_parameter.tf_gnss_parent_flame);
+  node->declare_parameter("tf_gnss_flame.child", position_parameter.tf_gnss_child_flame);
+  node->declare_parameter("use_gnss_mode",use_gnss_mode);
+  node->declare_parameter("use_canless_mode",use_canless_mode);
+
+  node->get_parameter("rtklib_nav_topic",subscribe_rtklib_nav_topic_name);
+  node->get_parameter("gga_topic",subscribe_gga_topic_name);
+  node->get_parameter("position.estimated_distance",position_parameter.estimated_distance);
+  node->get_parameter("position.separation_distance",position_parameter.separation_distance);
+  node->get_parameter("position.estimated_velocity_threshold",position_parameter.estimated_velocity_threshold);
+  node->get_parameter("position.outlier_threshold",position_parameter.outlier_threshold);
+  node->get_parameter("position.estimated_enu_vel_coefficient",position_parameter.estimated_enu_vel_coefficient);
+  node->get_parameter("position.estimated_position_coefficient",position_parameter.estimated_position_coefficient);
+  node->get_parameter("ecef_base_pos.x",position_parameter.ecef_base_pos_x);
+  node->get_parameter("ecef_base_pos.y",position_parameter.ecef_base_pos_y);
+  node->get_parameter("ecef_base_pos.z",position_parameter.ecef_base_pos_z);
+  node->get_parameter("tf_gnss_flame.parent", position_parameter.tf_gnss_parent_flame);
+  node->get_parameter("tf_gnss_flame.child", position_parameter.tf_gnss_child_flame);
+  node->get_parameter("use_gnss_mode",use_gnss_mode);
+  node->get_parameter("use_canless_mode",use_canless_mode);
 
   std::cout<< "subscribe_rtklib_nav_topic_name "<<subscribe_rtklib_nav_topic_name<<std::endl;
-  std::cout<< "subscribe_navsatfix_topic_name "<<subscribe_navsatfix_topic_name<<std::endl;
+  std::cout<< "subscribe_gga_topic_name "<<subscribe_gga_topic_name<<std::endl;
   std::cout<< "estimated_distance "<<position_parameter.estimated_distance<<std::endl;
   std::cout<< "separation_distance "<<position_parameter.separation_distance<<std::endl;
   std::cout<< "estimated_velocity_threshold "<<position_parameter.estimated_velocity_threshold<<std::endl;
   std::cout<< "outlier_threshold "<<position_parameter.outlier_threshold<<std::endl;
   std::cout<< "estimated_enu_vel_coefficient "<<position_parameter.estimated_enu_vel_coefficient<<std::endl;
   std::cout<< "estimated_position_coefficient "<<position_parameter.estimated_position_coefficient<<std::endl;
-  std::cout<< "tf_gnss_flame/parent "<<position_parameter.tf_gnss_parent_flame<<std::endl;
-  std::cout<< "tf_gnss_flame/child "<<position_parameter.tf_gnss_child_flame<<std::endl;
+  std::cout<< "tf_gnss_flame.parent "<<position_parameter.tf_gnss_parent_flame<<std::endl;
+  std::cout<< "tf_gnss_flame.child "<<position_parameter.tf_gnss_child_flame<<std::endl;
   std::cout<< "use_gnss_mode "<<use_gnss_mode<<std::endl;
+  std::cout<< "use_canless_mode "<<use_canless_mode<<std::endl;
 
-  ros::Subscriber sub1 = n.subscribe("enu_vel", 1000, enu_vel_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub2 = n.subscribe(subscribe_rtklib_nav_topic_name, 1000, rtklib_nav_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub3 = n.subscribe("velocity_scale_factor", 1000, velocity_scale_factor_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub4 = n.subscribe("distance", 1000, distance_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub5 = n.subscribe("heading_interpolate_3rd", 1000, heading_interpolate_3rd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub6 = n.subscribe(subscribe_navsatfix_topic_name, 1000, fix_callback, ros::TransportHints().tcpNoDelay());
-  
-  pub = n.advertise<eagleye_msgs::Position>("enu_absolute_pos", 1000);
+  auto sub1 = node->create_subscription<geometry_msgs::msg::Vector3Stamped>("enu_vel", 1000, enu_vel_callback);
+  auto sub2 = node->create_subscription<rtklib_msgs::msg::RtklibNav>(subscribe_rtklib_nav_topic_name, 1000, rtklib_nav_callback);
+  auto sub3 = node->create_subscription<geometry_msgs::msg::TwistStamped>("velocity", rclcpp::QoS(10), velocity_callback);
+  auto sub4 = node->create_subscription<eagleye_msgs::msg::StatusStamped>("velocity_status", rclcpp::QoS(10), velocity_status_callback);
+  auto sub5 = node->create_subscription<eagleye_msgs::msg::VelocityScaleFactor>("velocity_scale_factor", 1000, velocity_scale_factor_callback);
+  auto sub6 = node->create_subscription<eagleye_msgs::msg::Distance>("distance", 1000, distance_callback);
+  auto sub7 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_interpolate_3rd", 1000, heading_interpolate_3rd_callback);
+  auto sub8 = node->create_subscription<nmea_msgs::msg::Gpgga>(subscribe_gga_topic_name, 1000, gga_callback);
 
-  tf2_ros::Buffer tfBuffer_;
-  tf2_ros::TransformListener tfListener_(tfBuffer_);
-  ros::Timer timer = n.createTimer(ros::Duration(0.5), boost::bind(timer_callback,_1, &tfListener_, &tfBuffer_));
+  pub = node->create_publisher<eagleye_msgs::msg::Position>("enu_absolute_pos", 1000);
 
-  ros::spin();
+  const auto period_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(0.5));
+  // auto timer_callback = std::bind(&on_timer, node);
+  auto timer_callback = std::bind(on_timer);
+  auto timer = std::make_shared<rclcpp::GenericTimer<decltype(timer_callback)>>(
+    node->get_clock(), period_ns, std::move(timer_callback),
+    node->get_node_base_interface()->get_context());
+  node->get_node_timers_interface()->add_timer(timer, nullptr);
+
+  rclcpp::spin(node);
 
   return 0;
 }

@@ -23,14 +23,14 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "coordinate/coordinate.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
 #include <math.h>
 
 
 void xyz2enu_vel(double ecef_vel[3], double ecef_base_pos[3], double enu_vel[3])
 {
   double llh_base_pos[3];
-  ecef2llh(ecef_base_pos,llh_base_pos);
+  ecef2llh(ecef_base_pos, llh_base_pos);
   enu_vel[0] = (-ecef_vel[0] * (sin(llh_base_pos[1]))) + (ecef_vel[1] * (cos(llh_base_pos[1])));
   enu_vel[1] = (-ecef_vel[0] * (cos(llh_base_pos[1])) * (sin(llh_base_pos[0]))) - (ecef_vel[1] * (sin(llh_base_pos[1])) * (sin(llh_base_pos[0]))) + (ecef_vel[2] * (cos(llh_base_pos[0])));
   enu_vel[2] = (ecef_vel[0] * (cos(llh_base_pos[1])) * (cos(llh_base_pos[0]))) + (ecef_vel[1] * (sin(llh_base_pos[1])) * (cos(llh_base_pos[0]))) + (ecef_vel[2] * (sin(llh_base_pos[0])));

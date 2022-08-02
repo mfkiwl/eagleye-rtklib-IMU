@@ -28,104 +28,117 @@
  * Author MapIV Sekino
  */
 
-#include "ros/ros.h"
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-static sensor_msgs::Imu imu;
-static geometry_msgs::TwistStamped velocity;
-static eagleye_msgs::VelocityScaleFactor velocity_scale_factor;
-static eagleye_msgs::Heading heading_interpolate_3rd;
-static eagleye_msgs::YawrateOffset yawrate_offset_stop;
-static eagleye_msgs::YawrateOffset yawrate_offset_2nd;
-static eagleye_msgs::Pitching pitching;
+static sensor_msgs::msg::Imu imu;
+static geometry_msgs::msg::TwistStamped velocity;
+static eagleye_msgs::msg::StatusStamped velocity_status;
+static geometry_msgs::msg::TwistStamped correction_velocity;
+static eagleye_msgs::msg::VelocityScaleFactor velocity_scale_factor;
+static eagleye_msgs::msg::Heading heading_interpolate_3rd;
+static eagleye_msgs::msg::YawrateOffset yawrate_offset_stop;
+static eagleye_msgs::msg::YawrateOffset yawrate_offset_2nd;
+static eagleye_msgs::msg::Pitching pitching;
 
-static geometry_msgs::Vector3Stamped enu_vel;
-static eagleye_msgs::Position enu_relative_pos;
-static geometry_msgs::TwistStamped eagleye_twist;
-static ros::Publisher pub1;
-static ros::Publisher pub2;
-static ros::Publisher pub3;
+static geometry_msgs::msg::Vector3Stamped enu_vel;
+static eagleye_msgs::msg::Position enu_relative_pos;
+static geometry_msgs::msg::TwistStamped eagleye_twist;
+rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr pub1;
+rclcpp::Publisher<eagleye_msgs::msg::Position>::SharedPtr pub2;
+rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr pub3;
+rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr pub4;
 
 struct TrajectoryParameter trajectory_parameter;
 struct TrajectoryStatus trajectory_status;
 
-static double update_rate = 10;
+static double timer_updata_rate = 10;
 static double th_deadlock_time = 1;
 
 static double imu_time_last,velocity_time_last;
 static bool input_status;
 
-void velocity_scale_factor_callback(const eagleye_msgs::VelocityScaleFactor::ConstPtr& msg)
+static bool use_canless_mode;
+
+void correction_velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
 {
-  velocity_scale_factor.header = msg->header;
-  velocity_scale_factor.scale_factor = msg->scale_factor;
-  velocity_scale_factor.correction_velocity = msg->correction_velocity;
-  velocity_scale_factor.status = msg->status;
+  correction_velocity = *msg;
 }
 
-void heading_interpolate_3rd_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void velocity_status_callback(const eagleye_msgs::msg::StatusStamped::ConstPtr msg)
 {
-  heading_interpolate_3rd.header = msg->header;
-  heading_interpolate_3rd.heading_angle = msg->heading_angle;
-  heading_interpolate_3rd.status = msg->status;
+  velocity_status = *msg;
 }
 
-void yawrate_offset_stop_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void velocity_scale_factor_callback(const eagleye_msgs::msg::VelocityScaleFactor::ConstSharedPtr msg)
 {
-  yawrate_offset_stop.header = msg->header;
-  yawrate_offset_stop.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset_stop.status = msg->status;
+  velocity_scale_factor = *msg;
 }
 
-void yawrate_offset_2nd_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void heading_interpolate_3rd_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  yawrate_offset_2nd.header = msg->header;
-  yawrate_offset_2nd.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset_2nd.status = msg->status;
+  heading_interpolate_3rd = *msg;
 }
 
-void pitching_callback(const eagleye_msgs::Pitching::ConstPtr& msg)
+void yawrate_offset_stop_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  pitching.header = msg->header;
-  pitching.pitching_angle = msg->pitching_angle;
-  pitching.status = msg->status;
+  yawrate_offset_stop = *msg;
 }
 
-void velocity_callback(const geometry_msgs::TwistStamped::ConstPtr& msg)
+void yawrate_offset_2nd_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  velocity.header = msg->header;
-  velocity.twist = msg->twist;
+  yawrate_offset_2nd = *msg;
 }
 
-void timer_callback(const ros::TimerEvent& e)
+void pitching_callback(const eagleye_msgs::msg::Pitching::ConstSharedPtr msg)
 {
-  if (std::abs(imu.header.stamp.toSec() - imu_time_last) < th_deadlock_time &&
-      std::abs(velocity.header.stamp.toSec() - velocity_time_last) < th_deadlock_time &&
-      std::abs(velocity.header.stamp.toSec() - imu.header.stamp.toSec()) < th_deadlock_time)
+  pitching = *msg;
+}
+
+void velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
+{
+  velocity = *msg;
+}
+
+void on_timer()
+{
+  rclcpp::Time imu_clock(imu.header.stamp);
+  double imu_time = imu_clock.seconds();
+  rclcpp::Time velocity_clock(velocity.header.stamp);
+  double velocity_time = velocity_clock.seconds();
+  if (std::abs(imu_time - imu_time_last) < th_deadlock_time &&
+      std::abs(velocity_time - velocity_time_last) < th_deadlock_time &&
+      std::abs(velocity_time - imu_time) < th_deadlock_time)
   {
     input_status = true;
   }
   else
   {
     input_status = false;
-    ROS_WARN("Twist is missing the required input topics.");
+    RCLCPP_WARN(rclcpp::get_logger("trajectory"), "Twist is missing the required input topics.");
   }
-  
-  if (imu.header.stamp.toSec() != imu_time_last) imu_time_last = imu.header.stamp.toSec();
-  if (velocity.header.stamp.toSec() != velocity_time_last) velocity_time_last = velocity.header.stamp.toSec();
+
+  if (imu_time != imu_time_last) imu_time_last = imu_time;
+  if (velocity_time != velocity_time_last) velocity_time_last = velocity_time;
 }
 
-void imu_callback(const sensor_msgs::Imu::ConstPtr& msg)
+void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
-  imu.header = msg->header;
-  imu.orientation = msg->orientation;
-  imu.orientation_covariance = msg->orientation_covariance;
-  imu.angular_velocity = msg->angular_velocity;
-  imu.angular_velocity_covariance = msg->angular_velocity_covariance;
-  imu.linear_acceleration = msg->linear_acceleration;
-  imu.linear_acceleration_covariance = msg->linear_acceleration_covariance;
+  if(use_canless_mode && !velocity_status.status.enabled_status) return;
 
+  eagleye_msgs::msg::StatusStamped velocity_enable_status;
+  if(use_canless_mode)
+  {
+    velocity_enable_status = velocity_status;
+  }
+  else
+  {
+    velocity_enable_status.header = velocity_scale_factor.header;
+    velocity_enable_status.status = velocity_scale_factor.status;
+  }
+
+  imu = *msg;
   if(input_status)
   {
     enu_vel.header = msg->header;
@@ -134,56 +147,79 @@ void imu_callback(const sensor_msgs::Imu::ConstPtr& msg)
     enu_relative_pos.header.frame_id = "base_link";
     eagleye_twist.header = msg->header;
     eagleye_twist.header.frame_id = "base_link";
-    trajectory3d_estimate(imu,velocity_scale_factor,heading_interpolate_3rd,yawrate_offset_stop,yawrate_offset_2nd,pitching,trajectory_parameter,&trajectory_status,&enu_vel,&enu_relative_pos,&eagleye_twist);
+    trajectory3d_estimate(imu,correction_velocity,velocity_enable_status,heading_interpolate_3rd,yawrate_offset_stop,yawrate_offset_2nd,pitching,
+      trajectory_parameter,&trajectory_status,&enu_vel,&enu_relative_pos,&eagleye_twist);
 
-    if(heading_interpolate_3rd.status.enabled_status == true)
+    if (heading_interpolate_3rd.status.enabled_status)
     {
-      pub1.publish(enu_vel);
-      pub2.publish(enu_relative_pos);
+      pub1->publish(enu_vel);
+      pub2->publish(enu_relative_pos);
     }
-    pub3.publish(eagleye_twist);
+    pub3->publish(eagleye_twist);
+
+    geometry_msgs::msg::TwistWithCovarianceStamped eagleye_twist_with_covariance;
+    eagleye_twist_with_covariance.header = msg->header;
+    eagleye_twist_with_covariance.header.frame_id = "base_link";
+    eagleye_twist_with_covariance.twist.twist = eagleye_twist.twist;
+    // TODO(Map IV): temporary value
+    // linear.y, linear.z, angular.x, and angular.y are not calculated values.
+    eagleye_twist_with_covariance.twist.covariance[0] = 0.2 * 0.2;
+    eagleye_twist_with_covariance.twist.covariance[7] = 10000.0;
+    eagleye_twist_with_covariance.twist.covariance[14] = 10000.0;
+    eagleye_twist_with_covariance.twist.covariance[21] = 10000.0;
+    eagleye_twist_with_covariance.twist.covariance[28] = 10000.0;
+    eagleye_twist_with_covariance.twist.covariance[35] = 0.1 * 0.1;
+
+    pub4->publish(eagleye_twist_with_covariance);
   }
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "trajectory");
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("trajectory");
 
-  ros::NodeHandle n;
+  node->declare_parameter("trajectory.stop_judgment_velocity_threshold",trajectory_parameter.stop_judgment_velocity_threshold);
+  node->declare_parameter("trajectory.stop_judgment_yawrate_threshold",trajectory_parameter.stop_judgment_yawrate_threshold);
+  node->declare_parameter("timer_updata_rate",timer_updata_rate);
+  node->declare_parameter("th_deadlock_time",th_deadlock_time);
+  node->declare_parameter("use_canless_mode",use_canless_mode);
 
-  std::string subscribe_imu_topic_name = "/imu/data_raw";
-  std::string subscribe_twist_topic_name = "/can_twist";
+  node->get_parameter("trajectory.stop_judgment_velocity_threshold",trajectory_parameter.stop_judgment_velocity_threshold);
+  node->get_parameter("trajectory.stop_judgment_yawrate_threshold",trajectory_parameter.stop_judgment_yawrate_threshold);
+  node->get_parameter("timer_updata_rate",timer_updata_rate);
+  node->get_parameter("th_deadlock_time",th_deadlock_time);
+  node->get_parameter("use_canless_mode",use_canless_mode);
 
-  n.getParam("imu_topic",subscribe_imu_topic_name);
-  n.getParam("twist_topic",subscribe_twist_topic_name);
-  n.getParam("reverse_imu", trajectory_parameter.reverse_imu);
-  n.getParam("trajectory/stop_judgment_velocity_threshold",trajectory_parameter.stop_judgment_velocity_threshold);
-  n.getParam("trajectory/stop_judgment_yawrate_threshold",trajectory_parameter.stop_judgment_yawrate_threshold);
-  n.getParam("trajectory/timer_updata_rate",update_rate);
-  n.getParam("trajectory/th_deadlock_time",th_deadlock_time);
-
-  std::cout<< "subscribe_imu_topic_name "<<subscribe_imu_topic_name<<std::endl;
-  std::cout<< "subscribe_twist_topic_name "<<subscribe_twist_topic_name<<std::endl;
-  std::cout<< "reverse_imu "<<trajectory_parameter.reverse_imu<<std::endl;
   std::cout<< "stop_judgment_velocity_threshold "<<trajectory_parameter.stop_judgment_velocity_threshold<<std::endl;
   std::cout<< "stop_judgment_yawrate_threshold "<<trajectory_parameter.stop_judgment_yawrate_threshold<<std::endl;
-  std::cout<< "timer_updata_rate "<<update_rate<<std::endl;
+  std::cout<< "timer_updata_rate "<<timer_updata_rate<<std::endl;
   std::cout<< "th_deadlock_time "<<th_deadlock_time<<std::endl;
+  std::cout<< "use_canless_mode "<<use_canless_mode<<std::endl;
 
-  ros::Subscriber sub1 = n.subscribe(subscribe_imu_topic_name, 1000, imu_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub2 = n.subscribe(subscribe_twist_topic_name, 1000, velocity_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub3 = n.subscribe("velocity_scale_factor", 1000, velocity_scale_factor_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub4 = n.subscribe("heading_interpolate_3rd", 1000, heading_interpolate_3rd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub5 = n.subscribe("yawrate_offset_stop", 1000, yawrate_offset_stop_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub6 = n.subscribe("yawrate_offset_2nd", 1000, yawrate_offset_2nd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub7 = n.subscribe("pitching", 1000, pitching_callback, ros::TransportHints().tcpNoDelay());
-  pub1 = n.advertise<geometry_msgs::Vector3Stamped>("enu_vel", 1000);
-  pub2 = n.advertise<eagleye_msgs::Position>("enu_relative_pos", 1000);
-  pub3 = n.advertise<geometry_msgs::TwistStamped>("twist", 1000);
+  auto sub1 = node->create_subscription<sensor_msgs::msg::Imu>("imu/data_tf_converted", 1000, imu_callback);  //ros::TransportHints().tcpNoDelay()
+  auto sub2 = node->create_subscription<geometry_msgs::msg::TwistStamped>("velocity", rclcpp::QoS(10), velocity_callback);
+  auto sub3 = node->create_subscription<eagleye_msgs::msg::StatusStamped>("velocity_status", rclcpp::QoS(10), velocity_status_callback);
+  auto sub4 = node->create_subscription<eagleye_msgs::msg::VelocityScaleFactor>("velocity_scale_factor", rclcpp::QoS(10), velocity_scale_factor_callback);  //ros::TransportHints().tcpNoDelay()
+  auto sub5 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_interpolate_3rd", rclcpp::QoS(10), heading_interpolate_3rd_callback);  //ros::TransportHints().tcpNoDelay()
+  auto sub6 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_stop", rclcpp::QoS(10), yawrate_offset_stop_callback);  //ros::TransportHints().tcpNoDelay()
+  auto sub7 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_2nd", rclcpp::QoS(10), yawrate_offset_2nd_callback);  //ros::TransportHints().tcpNoDelay()
+  auto sub8 = node->create_subscription<eagleye_msgs::msg::Pitching>("pitching", rclcpp::QoS(10), pitching_callback);  //ros::TransportHints().tcpNoDelay()
+  pub1 = node->create_publisher<geometry_msgs::msg::Vector3Stamped>("enu_vel", 1000);
+  pub2 = node->create_publisher<eagleye_msgs::msg::Position>("enu_relative_pos", 1000);
+  pub3 = node->create_publisher<geometry_msgs::msg::TwistStamped>("twist", 1000);
+  pub4 = node->create_publisher<geometry_msgs::msg::TwistWithCovarianceStamped>("twist_with_covariance", 1000);
 
-  ros::Timer timer = n.createTimer(ros::Duration(1/update_rate), timer_callback);
+  double delta_time = 1.0 / static_cast<double>(timer_updata_rate);
+  auto timer_callback = std::bind(on_timer);
+  const auto period_ns =
+    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(delta_time));
+  auto timer = std::make_shared<rclcpp::GenericTimer<decltype(timer_callback)>>(
+    node->get_clock(), period_ns, std::move(timer_callback),
+    node->get_node_base_interface()->get_context());
+  node->get_node_timers_interface()->add_timer(timer, nullptr);
 
-  ros::spin();
+  rclcpp::spin(node);
 
   return 0;
 }

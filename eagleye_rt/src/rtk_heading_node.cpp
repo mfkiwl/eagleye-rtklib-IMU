@@ -28,126 +28,120 @@
  * Author MapIV Sekino
  */
 
-#include "ros/ros.h"
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-static sensor_msgs::NavSatFix fix;
-static sensor_msgs::Imu imu;
-static eagleye_msgs::VelocityScaleFactor velocity_scale_factor;
-static eagleye_msgs::Distance distance;
-static eagleye_msgs::YawrateOffset yawrate_offset_stop;
-static eagleye_msgs::YawrateOffset yawrate_offset;
-static eagleye_msgs::SlipAngle slip_angle;
-static eagleye_msgs::Heading heading_interpolate;
+static nmea_msgs::msg::Gpgga gga;
+static sensor_msgs::msg::Imu imu;
+static geometry_msgs::msg::TwistStamped velocity;
+static eagleye_msgs::msg::StatusStamped velocity_status;
+static eagleye_msgs::msg::Distance distance;
+static eagleye_msgs::msg::YawrateOffset yawrate_offset_stop;
+static eagleye_msgs::msg::YawrateOffset yawrate_offset;
+static eagleye_msgs::msg::SlipAngle slip_angle;
+static eagleye_msgs::msg::Heading heading_interpolate;
 
-
-static ros::Publisher pub;
-static eagleye_msgs::Heading heading;
+rclcpp::Publisher<eagleye_msgs::msg::Heading>::SharedPtr pub;
+static eagleye_msgs::msg::Heading heading;
 
 struct RtkHeadingParameter heading_parameter;
 struct RtkHeadingStatus heading_status;
 
-void fix_callback(const sensor_msgs::NavSatFix::ConstPtr& msg)
+static bool use_canless_mode;
+
+void velocity_callback(const geometry_msgs::msg::TwistStamped::ConstPtr msg)
 {
-  fix.header = msg->header;
-  fix.status = msg->status;
-  fix.latitude = msg->latitude;
-  fix.longitude = msg->longitude;
-  fix.altitude = msg->altitude;
-  fix.position_covariance = msg->position_covariance;
-  fix.position_covariance_type = msg->position_covariance_type;
+  velocity = *msg;
 }
 
-void velocity_scale_factor_callback(const eagleye_msgs::VelocityScaleFactor::ConstPtr& msg)
+void gga_callback(const nmea_msgs::msg::Gpgga::ConstSharedPtr msg)
 {
-  velocity_scale_factor.header = msg->header;
-  velocity_scale_factor.scale_factor = msg->scale_factor;
-  velocity_scale_factor.correction_velocity = msg->correction_velocity;
-  velocity_scale_factor.status = msg->status;
+  gga = *msg;
 }
 
-void yawrate_offset_stop_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void velocity_status_callback(const eagleye_msgs::msg::StatusStamped::ConstPtr msg)
 {
-  yawrate_offset_stop.header = msg->header;
-  yawrate_offset_stop.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset_stop.status = msg->status;
+  velocity_status = *msg;
 }
 
-void yawrate_offset_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void yawrate_offset_stop_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  yawrate_offset.header = msg->header;
-  yawrate_offset.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset.status = msg->status;
+  yawrate_offset_stop = *msg;
 }
 
-void slip_angle_callback(const eagleye_msgs::SlipAngle::ConstPtr& msg)
+void yawrate_offset_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  slip_angle.header = msg->header;
-  slip_angle.coefficient = msg->coefficient;
-  slip_angle.slip_angle = msg->slip_angle;
-  slip_angle.status = msg->status;
+  yawrate_offset = *msg;
 }
 
-void heading_interpolate_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void slip_angle_callback(const eagleye_msgs::msg::SlipAngle::ConstSharedPtr msg)
 {
-  heading_interpolate.header = msg->header;
-  heading_interpolate.heading_angle = msg->heading_angle;
-  heading_interpolate.status = msg->status;
+  slip_angle = *msg;
 }
 
-void distance_callback(const eagleye_msgs::Distance::ConstPtr& msg)
+void heading_interpolate_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  distance.header = msg->header;
-  distance.distance = msg->distance;
-  distance.status = msg->status;
+  heading_interpolate = *msg;
 }
 
-void imu_callback(const sensor_msgs::Imu::ConstPtr& msg)
+void distance_callback(const eagleye_msgs::msg::Distance::ConstSharedPtr msg)
 {
-  imu.header = msg->header;
-  imu.orientation = msg->orientation;
-  imu.orientation_covariance = msg->orientation_covariance;
-  imu.angular_velocity = msg->angular_velocity;
-  imu.angular_velocity_covariance = msg->angular_velocity_covariance;
-  imu.linear_acceleration = msg->linear_acceleration;
-  imu.linear_acceleration_covariance = msg->linear_acceleration_covariance;
+  distance = *msg;
+}
+
+void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
+{
+  if(use_canless_mode && !velocity_status.status.enabled_status) return;
+
+  imu = *msg;
   heading.header = msg->header;
   heading.header.frame_id = "base_link";
-  rtk_heading_estimate(fix,imu,velocity_scale_factor,distance,yawrate_offset_stop,yawrate_offset,slip_angle,heading_interpolate,heading_parameter,&heading_status,&heading);
+  rtk_heading_estimate(gga,imu,velocity,distance,yawrate_offset_stop,yawrate_offset,slip_angle,heading_interpolate,heading_parameter,&heading_status,&heading);
 
   if (heading.status.estimate_status == true)
   {
-    pub.publish(heading);
+    pub->publish(heading);
   }
   heading.status.estimate_status = false;
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "rtk_heading");
-  ros::NodeHandle n;
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("rtk_heading");
 
-  std::string subscribe_imu_topic_name = "/imu/data_raw";
-  std::string subscribe_navsatfix_topic_name = "/navsat/fix";
 
-  n.getParam("imu_topic",subscribe_imu_topic_name);
-  n.getParam("navsatfix_topic",subscribe_navsatfix_topic_name);
-  n.getParam("reverse_imu", heading_parameter.reverse_imu);
-  n.getParam("rtk_heading/estimated_distance",heading_parameter.estimated_distance);
-  n.getParam("rtk_heading/estimated_heading_buffer_min",heading_parameter.estimated_heading_buffer_min);
-  n.getParam("rtk_heading/estimated_number_min",heading_parameter.estimated_number_min);
-  n.getParam("rtk_heading/estimated_number_max",heading_parameter.estimated_number_max);
-  n.getParam("rtk_heading/estimated_gnss_coefficient",heading_parameter.estimated_gnss_coefficient);
-  n.getParam("rtk_heading/estimated_heading_coefficient",heading_parameter.estimated_heading_coefficient);
-  n.getParam("rtk_heading/outlier_threshold",heading_parameter.outlier_threshold);
-  n.getParam("rtk_heading/estimated_velocity_threshold",heading_parameter.estimated_velocity_threshold);
-  n.getParam("rtk_heading/stop_judgment_velocity_threshold",heading_parameter.stop_judgment_velocity_threshold);
-  n.getParam("rtk_heading/estimated_yawrate_threshold",heading_parameter.estimated_yawrate_threshold);
+  std::string subscribe_gga_topic_name = "/navsat/gga";
 
-  std::cout<< "subscribe_imu_topic_name "<<subscribe_imu_topic_name<<std::endl;
-  std::cout<< "subscribe_navsatfix_topic_name "<<subscribe_navsatfix_topic_name<<std::endl;
-  std::cout<< "reverse_imu "<<heading_parameter.reverse_imu<<std::endl;
+
+  node->declare_parameter("gga_topic",subscribe_gga_topic_name);
+  node->declare_parameter("rtk_heading.estimated_distance",heading_parameter.estimated_distance);
+  node->declare_parameter("rtk_heading.estimated_heading_buffer_min",heading_parameter.estimated_heading_buffer_min);
+  node->declare_parameter("rtk_heading.estimated_number_min",heading_parameter.estimated_number_min);
+  node->declare_parameter("rtk_heading.estimated_number_max",heading_parameter.estimated_number_max);
+  node->declare_parameter("rtk_heading.estimated_gnss_coefficient",heading_parameter.estimated_gnss_coefficient);
+  node->declare_parameter("rtk_heading.estimated_heading_coefficient",heading_parameter.estimated_heading_coefficient);
+  node->declare_parameter("rtk_heading.outlier_threshold",heading_parameter.outlier_threshold);
+  node->declare_parameter("rtk_heading.estimated_velocity_threshold",heading_parameter.estimated_velocity_threshold);
+  node->declare_parameter("rtk_heading.stop_judgment_velocity_threshold",heading_parameter.stop_judgment_velocity_threshold);
+  node->declare_parameter("rtk_heading.estimated_yawrate_threshold",heading_parameter.estimated_yawrate_threshold);
+  node->declare_parameter("use_canless_mode",use_canless_mode);
+
+  node->get_parameter("gga_topic",subscribe_gga_topic_name);
+  node->get_parameter("rtk_heading.estimated_distance",heading_parameter.estimated_distance);
+  node->get_parameter("rtk_heading.estimated_heading_buffer_min",heading_parameter.estimated_heading_buffer_min);
+  node->get_parameter("rtk_heading.estimated_number_min",heading_parameter.estimated_number_min);
+  node->get_parameter("rtk_heading.estimated_number_max",heading_parameter.estimated_number_max);
+  node->get_parameter("rtk_heading.estimated_gnss_coefficient",heading_parameter.estimated_gnss_coefficient);
+  node->get_parameter("rtk_heading.estimated_heading_coefficient",heading_parameter.estimated_heading_coefficient);
+  node->get_parameter("rtk_heading.outlier_threshold",heading_parameter.outlier_threshold);
+  node->get_parameter("rtk_heading.estimated_velocity_threshold",heading_parameter.estimated_velocity_threshold);
+  node->get_parameter("rtk_heading.stop_judgment_velocity_threshold",heading_parameter.stop_judgment_velocity_threshold);
+  node->get_parameter("rtk_heading.estimated_yawrate_threshold",heading_parameter.estimated_yawrate_threshold);
+  node->get_parameter("use_canless_moded",use_canless_mode);
+
+  std::cout<< "subscribe_gga_topic_name "<<subscribe_gga_topic_name<<std::endl;
   std::cout<< "estimated_distance "<<heading_parameter.estimated_distance<<std::endl;
   std::cout<< "estimated_heading_buffer_min "<<heading_parameter.estimated_heading_buffer_min<<std::endl;
   std::cout<< "estimated_number_min "<<heading_parameter.estimated_number_min<<std::endl;
@@ -158,12 +152,13 @@ int main(int argc, char** argv)
   std::cout<< "estimated_velocity_threshold "<<heading_parameter.estimated_velocity_threshold<<std::endl;
   std::cout<< "stop_judgment_velocity_threshold "<<heading_parameter.stop_judgment_velocity_threshold<<std::endl;
   std::cout<< "estimated_yawrate_threshold "<<heading_parameter.estimated_yawrate_threshold<<std::endl;
+  std::cout<< "use_canless_mode "<<use_canless_mode<<std::endl;
 
   std::string publish_topic_name = "/publish_topic_name/invalid";
   std::string subscribe_topic_name = "/subscribe_topic_name/invalid";
   std::string subscribe_topic_name2 = "/subscribe_topic_name2/invalid";
 
-  if (argc == 2)
+  if (argc > 2)
   {
     if (strcmp(argv[1], "1st") == 0)
     {
@@ -185,29 +180,29 @@ int main(int argc, char** argv)
     }
     else
     {
-      ROS_ERROR("Invalid argument");
-      ros::shutdown();
+      RCLCPP_ERROR(node->get_logger(),"Invalid argument");
+      rclcpp::shutdown();
     }
   }
   else
   {
-    ROS_ERROR("No arguments");
-    ros::shutdown();
+    RCLCPP_ERROR(node->get_logger(),"No arguments");
+    rclcpp::shutdown();
   }
 
-  ros::Subscriber sub1 = n.subscribe(subscribe_imu_topic_name, 1000, imu_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub2 = n.subscribe(subscribe_navsatfix_topic_name, 1000, fix_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub3 = n.subscribe("velocity_scale_factor", 1000, velocity_scale_factor_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub4 = n.subscribe("yawrate_offset_stop", 1000, yawrate_offset_stop_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub5 = n.subscribe(subscribe_topic_name, 1000, yawrate_offset_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub6 = n.subscribe("slip_angle", 1000, slip_angle_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub7 = n.subscribe(subscribe_topic_name2, 1000, heading_interpolate_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub8 = n.subscribe("distance", 1000, distance_callback, ros::TransportHints().tcpNoDelay());
+  auto sub1 = node->create_subscription<sensor_msgs::msg::Imu>("imu/data_tf_converted", 1000, imu_callback);
+  auto sub2 = node->create_subscription<nmea_msgs::msg::Gpgga>(subscribe_gga_topic_name, 1000, gga_callback);
+  auto sub3 = node->create_subscription<geometry_msgs::msg::TwistStamped>("velocity", rclcpp::QoS(10), velocity_callback);
+  auto sub4 = node->create_subscription<eagleye_msgs::msg::StatusStamped>("velocity_status", rclcpp::QoS(10), velocity_status_callback);
+  auto sub5 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_stop", 1000, yawrate_offset_stop_callback);
+  auto sub6 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>(subscribe_topic_name, 1000, yawrate_offset_callback);
+  auto sub7 = node->create_subscription<eagleye_msgs::msg::SlipAngle>("slip_angle", 1000, slip_angle_callback);
+  auto sub8 = node->create_subscription<eagleye_msgs::msg::Heading>(subscribe_topic_name2, 1000, heading_interpolate_callback);
+  auto sub9 = node->create_subscription<eagleye_msgs::msg::Distance>("distance", 1000, distance_callback);
 
+  pub = node->create_publisher<eagleye_msgs::msg::Heading>(publish_topic_name, 1000);
 
-  pub = n.advertise<eagleye_msgs::Heading>(publish_topic_name, 1000);
-
-  ros::spin();
+  rclcpp::spin(node);
 
   return 0;
 }

@@ -28,108 +28,138 @@
  * Author MapIV Hoda
  */
 
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-static ros::Publisher pub1,pub2;
-static eagleye_msgs::VelocityScaleFactor velocity_scale_factor;
-static eagleye_msgs::YawrateOffset yawrate_offset_2nd;
-static eagleye_msgs::YawrateOffset yawrate_offset_stop;
-static eagleye_msgs::Distance distance;
-static geometry_msgs::PoseStamped localization_pose;
-static eagleye_msgs::AngularVelocityOffset angular_velocity_offset_stop;
-static sensor_msgs::Imu imu;
+rclcpp::Publisher<eagleye_msgs::msg::AccYOffset>::SharedPtr _pub1;
+rclcpp::Publisher<eagleye_msgs::msg::Rolling>::SharedPtr _pub2;
 
-static eagleye_msgs::Rolling rolling_angle;
-static eagleye_msgs::AccYOffset acc_y_offset;
+static eagleye_msgs::msg::VelocityScaleFactor _velocity_scale_factor;
+static geometry_msgs::msg::TwistStamped _velocity;
+static eagleye_msgs::msg::StatusStamped _velocity_status;
+static eagleye_msgs::msg::YawrateOffset _yawrate_offset_2nd;
+static eagleye_msgs::msg::YawrateOffset _yawrate_offset_stop;
+static eagleye_msgs::msg::Distance _distance;
+static geometry_msgs::msg::PoseStamped _localization_pose;
+static eagleye_msgs::msg::AngularVelocityOffset _angular_velocity_offset_stop;
+static sensor_msgs::msg::Imu _imu;
 
-struct EnableAdditionalRollingParameter rolling_parameter;
-struct EnableAdditionalRollingStatus rolling_status;
+static eagleye_msgs::msg::Rolling _rolling_angle;
+static eagleye_msgs::msg::AccYOffset _acc_y_offset;
 
-void  velocity_scale_factor_callback(const eagleye_msgs::VelocityScaleFactor::ConstPtr &msg)
+struct EnableAdditionalRollingParameter _rolling_parameter;
+struct EnableAdditionalRollingStatus _rolling_status;
+
+static bool _use_canless_mode;
+
+void velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
 {
-  velocity_scale_factor = *msg;
+  _velocity = *msg;
 }
 
-void distance_callback(const eagleye_msgs::Distance::ConstPtr& msg)
+void velocity_status_callback(const eagleye_msgs::msg::StatusStamped::ConstSharedPtr msg)
 {
-  distance = *msg;
+  _velocity_status = *msg;
 }
 
-void  yawrate_offset_2nd_callback(const eagleye_msgs::YawrateOffset::ConstPtr &msg)
+void velocity_scale_factor_callback(const eagleye_msgs::msg::VelocityScaleFactor::ConstSharedPtr msg)
 {
-  yawrate_offset_2nd = *msg;
+  _velocity_scale_factor = *msg;
 }
 
-void  yawrate_offset_stop_callback(const eagleye_msgs::YawrateOffset::ConstPtr &msg)
+void distance_callback(const eagleye_msgs::msg::Distance::ConstSharedPtr msg)
 {
-  yawrate_offset_stop = *msg;
+  _distance = *msg;
 }
 
-void  localization_pose_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+void yawrate_offset_2nd_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  localization_pose = *msg;
+  _yawrate_offset_2nd = *msg;
 }
 
-void  angular_velocity_offset_stop_callback(const eagleye_msgs::AngularVelocityOffset::ConstPtr &msg)
+void yawrate_offset_stop_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  angular_velocity_offset_stop = *msg;
+  _yawrate_offset_stop = *msg;
 }
 
-void  imu_callback(const sensor_msgs::Imu::ConstPtr &msg)
+void localization_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
-  imu = *msg;
-  acc_y_offset.header = msg->header;
-  acc_y_offset.header.frame_id = "imu";
-  rolling_angle.header = msg->header;
-  rolling_angle.header.frame_id = "base_link";
-  enable_additional_rolling_estimate(velocity_scale_factor,yawrate_offset_2nd,yawrate_offset_stop,distance,imu,localization_pose,angular_velocity_offset_stop,rolling_parameter,&rolling_status,&rolling_angle,&acc_y_offset);
-  pub1.publish(acc_y_offset);
-  pub2.publish(rolling_angle);
+  _localization_pose = *msg;
+}
+
+void angular_velocity_offset_stop_callback(const eagleye_msgs::msg::AngularVelocityOffset::ConstSharedPtr msg)
+{
+  _angular_velocity_offset_stop = *msg;
+}
+
+void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
+{
+  if(_use_canless_mode && !_velocity_status.status.enabled_status) return;
+
+  eagleye_msgs::msg::StatusStamped velocity_enable_status;
+  if(_use_canless_mode)
+  {
+    velocity_enable_status = _velocity_status;
+  }
+  else
+  {
+    velocity_enable_status.header = _velocity_scale_factor.header;
+    velocity_enable_status.status = _velocity_scale_factor.status;
+  }
+
+  _imu = *msg;
+  _acc_y_offset.header = msg->header;
+  _acc_y_offset.header.frame_id = "imu";
+  _rolling_angle.header = msg->header;
+  _rolling_angle.header.frame_id = "base_link";
+  enable_additional_rolling_estimate(_velocity, velocity_enable_status, _yawrate_offset_2nd, _yawrate_offset_stop, _distance, _imu,
+    _localization_pose, _angular_velocity_offset_stop, _rolling_parameter, &_rolling_status, &_rolling_angle, &_acc_y_offset);
+  _pub1->publish(_acc_y_offset);
+  _pub2->publish(_rolling_angle);
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "enable_additional_rolling");
-  ros::NodeHandle n;
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("enable_additional_rolling");
 
-  std::string subscribe_imu_topic_name;
   std::string subscribe_localization_pose_topic_name;
 
-  n.getParam("localization_pose_topic",subscribe_localization_pose_topic_name);
-  n.getParam("imu_topic",subscribe_imu_topic_name);
-  n.getParam("reverse_imu",rolling_parameter.reverse_imu);
-  n.getParam("reverse_imu_angular_velocity_x",rolling_parameter.reverse_imu_angular_velocity_x);
-  n.getParam("reverse_imu_linear_acceleration_y",rolling_parameter.reverse_imu_linear_acceleration_y);
-  n.getParam("enable_additional_rolling/matching_update_distance",rolling_parameter.matching_update_distance);
-  n.getParam("enable_additional_rolling/stop_judgment_velocity_threshold",rolling_parameter.stop_judgment_velocity_threshold);
-  n.getParam("enable_additional_rolling/rolling_buffer_num",rolling_parameter.rolling_buffer_num);
-  n.getParam("enable_additional_rolling/link_Time_stamp_parameter",rolling_parameter.link_Time_stamp_parameter);
-  n.getParam("enable_additional_rolling/imu_buffer_num",rolling_parameter.imu_buffer_num);
+  node->declare_parameter("localization_pose_topic",subscribe_localization_pose_topic_name);
+  node->declare_parameter("enable_additional_rolling.matching_update_distance",_rolling_parameter.matching_update_distance);
+  node->declare_parameter("enable_additional_rolling.stop_judgment_velocity_threshold",_rolling_parameter.stop_judgment_velocity_threshold);
+  node->declare_parameter("enable_additional_rolling.rolling_buffer_num",_rolling_parameter.rolling_buffer_num);
+  node->declare_parameter("enable_additional_rolling.link_Time_stamp_parameter",_rolling_parameter.link_Time_stamp_parameter);
+  node->declare_parameter("enable_additional_rolling.imu_buffer_num",_rolling_parameter.imu_buffer_num);
+  node->declare_parameter("use_canless_mode",_use_canless_mode);
 
-  std::cout<< "subscribe_localization_pose_topic_name "<<subscribe_localization_pose_topic_name<<std::endl;
-  std::cout<< "subscribe_imu_topic_name "<<subscribe_imu_topic_name<<std::endl;
-  std::cout<< "reverse_imu "<<rolling_parameter.reverse_imu<<std::endl;
-  std::cout<< "reverse_imu_angular_velocity_x "<<rolling_parameter.reverse_imu_angular_velocity_x<<std::endl;
-  std::cout<< "reverse_imu_linear_acceleration_y "<<rolling_parameter.reverse_imu_linear_acceleration_y<<std::endl;
-  std::cout<< "matching_update_distance" <<rolling_parameter.matching_update_distance<<std::endl;
-  std::cout<< "stop_judgment_velocity_threshold" <<rolling_parameter.stop_judgment_velocity_threshold<<std::endl;
-  std::cout<< "rolling_buffer_num" <<rolling_parameter.rolling_buffer_num<<std::endl;
-  std::cout<< "link_Time_stamp_parameter" <<rolling_parameter.link_Time_stamp_parameter<<std::endl;
-  std::cout<< "imu_buffer_num" <<rolling_parameter.imu_buffer_num<<std::endl;
+  node->get_parameter("localization_pose_topic",subscribe_localization_pose_topic_name);
+  node->get_parameter("enable_additional_rolling.matching_update_distance",_rolling_parameter.matching_update_distance);
+  node->get_parameter("enable_additional_rolling.stop_judgment_velocity_threshold",_rolling_parameter.stop_judgment_velocity_threshold);
+  node->get_parameter("enable_additional_rolling.rolling_buffer_num",_rolling_parameter.rolling_buffer_num);
+  node->get_parameter("enable_additional_rolling.link_Time_stamp_parameter",_rolling_parameter.link_Time_stamp_parameter);
+  node->get_parameter("enable_additional_rolling.imu_buffer_num",_rolling_parameter.imu_buffer_num);
+  node->get_parameter("use_canless_modeum",_use_canless_mode);
 
-  ros::Subscriber sub1 = n.subscribe("velocity_scale_factor", 1000, velocity_scale_factor_callback , ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub2 = n.subscribe("yawrate_offset_2nd", 1000, yawrate_offset_2nd_callback , ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub3 = n.subscribe("yawrate_offset_stop", 1000, yawrate_offset_stop_callback , ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub4 = n.subscribe("distance", 1000, distance_callback , ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub5 = n.subscribe(subscribe_localization_pose_topic_name, 1000, localization_pose_callback , ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub6 = n.subscribe("angular_velocity_offset_stop", 1000, angular_velocity_offset_stop_callback , ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub7 = n.subscribe(subscribe_imu_topic_name, 1000, imu_callback , ros::TransportHints().tcpNoDelay());
+  std::cout<< "subscribe_localization_pose_topic_name: " << subscribe_localization_pose_topic_name << std::endl;
+  std::cout<< "matching_update_distance: " << _rolling_parameter.matching_update_distance << std::endl;
+  std::cout<< "stop_judgment_velocity_threshold: " << _rolling_parameter.stop_judgment_velocity_threshold << std::endl;
+  std::cout<< "rolling_buffer_num: " << _rolling_parameter.rolling_buffer_num << std::endl;
+  std::cout<< "link_Time_stamp_parameter: " << _rolling_parameter.link_Time_stamp_parameter << std::endl;
+  std::cout<< "imu_buffer_num: " << _rolling_parameter.imu_buffer_num << std::endl;
 
-  pub1 = n.advertise<eagleye_msgs::AccYOffset>("acc_y_offset_additional_rolling", 1000);
-  pub2 = n.advertise<eagleye_msgs::Rolling>("enable_additional_rolling", 1000);
- 
-  ros::spin();
+  auto sub1 = node->create_subscription<eagleye_msgs::msg::VelocityScaleFactor>("velocity_scale_factor", 1000, velocity_scale_factor_callback);
+  auto sub2 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_2nd", 1000, yawrate_offset_2nd_callback);
+  auto sub3 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_stop", 1000, yawrate_offset_stop_callback);
+  auto sub4 = node->create_subscription<eagleye_msgs::msg::Distance>("distance", 1000, distance_callback);
+  auto sub5 = node->create_subscription<geometry_msgs::msg::PoseStamped>(subscribe_localization_pose_topic_name, 1000, localization_pose_callback);
+  auto sub6 = node->create_subscription<eagleye_msgs::msg::AngularVelocityOffset>("angular_velocity_offset_stop", 1000, angular_velocity_offset_stop_callback);
+  auto sub7 = node->create_subscription<sensor_msgs::msg::Imu>("imu/data_tf_converted", 1000, imu_callback);
+
+  _pub1 = node->create_publisher<eagleye_msgs::msg::AccYOffset>("acc_y_offset_additional_rolling", 1000);
+  _pub2 = node->create_publisher<eagleye_msgs::msg::Rolling>("enable_additional_rolling", 1000);
+
+  rclcpp::spin(node);
 
   return 0;
 }

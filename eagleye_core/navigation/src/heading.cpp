@@ -28,13 +28,15 @@
  * Author MapIV Sekino
  */
 
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor velocity_scale_factor,eagleye_msgs::YawrateOffset yawrate_offset_stop,eagleye_msgs::YawrateOffset yawrate_offset,eagleye_msgs::SlipAngle slip_angle,eagleye_msgs::Heading heading_interpolate,HeadingParameter heading_parameter, HeadingStatus* heading_status,eagleye_msgs::Heading* heading)
+void heading_estimate_(sensor_msgs::msg::Imu imu, geometry_msgs::msg::TwistStamped velocity, eagleye_msgs::msg::YawrateOffset yawrate_offset_stop,
+  eagleye_msgs::msg::YawrateOffset yawrate_offset, eagleye_msgs::msg::SlipAngle slip_angle, eagleye_msgs::msg::Heading heading_interpolate,
+  HeadingParameter heading_parameter, HeadingStatus* heading_status, eagleye_msgs::msg::Heading* heading)
 {
   int i,index_max;
-  double yawrate = 0.0; 
+  double yawrate = 0.0;
   double avg = 0.0,tmp_heading_angle;
   bool gnss_status,gnss_update;
   std::size_t index_length;
@@ -42,6 +44,9 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
   std::size_t inversion_up_index_length;
   std::size_t inversion_down_index_length;
   std::vector<double>::iterator max;
+
+  rclcpp::Time ros_clock(imu.header.stamp);
+  auto imu_time = ros_clock.seconds();
 
   if (heading_status->estimated_number  < heading_parameter.estimated_number_max)
   {
@@ -52,19 +57,12 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
     heading_status->estimated_number  = heading_parameter.estimated_number_max;
   }
 
-  if (heading_parameter.reverse_imu == false)
-  {
-    yawrate = imu.angular_velocity.z;
-  }
-  else if (heading_parameter.reverse_imu == true)
-  {
-    yawrate = -1 * imu.angular_velocity.z;
-  }
+  yawrate = imu.angular_velocity.z;
 
   // data buffer generate
-  heading_status->time_buffer .push_back(imu.header.stamp.toSec());
+  heading_status->time_buffer .push_back(imu_time);
   heading_status->yawrate_buffer .push_back(yawrate);
-  heading_status->correction_velocity_buffer .push_back(velocity_scale_factor.correction_velocity.linear.x);
+  heading_status->correction_velocity_buffer .push_back(velocity.twist.linear.x);
   heading_status->yawrate_offset_stop_buffer .push_back(yawrate_offset_stop.yawrate_offset);
   heading_status->yawrate_offset_buffer .push_back(yawrate_offset.yawrate_offset);
   heading_status->slip_angle_buffer .push_back(slip_angle.slip_angle);
@@ -87,7 +85,10 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
   std::vector<int> velocity_index;
   std::vector<int> index;
 
-  if (heading_status->estimated_number  > heading_parameter.estimated_number_min && heading_status->gnss_status_buffer [heading_status->estimated_number -1] == true && heading_status->correction_velocity_buffer [heading_status->estimated_number -1] > heading_parameter.estimated_velocity_threshold && fabsf(heading_status->yawrate_buffer [heading_status->estimated_number -1]) < heading_parameter.estimated_yawrate_threshold)
+  if (heading_status->estimated_number  > heading_parameter.estimated_number_min &&
+    heading_status->gnss_status_buffer [heading_status->estimated_number -1] == true &&
+    heading_status->correction_velocity_buffer [heading_status->estimated_number -1] > heading_parameter.estimated_velocity_threshold &&
+    fabsf(heading_status->yawrate_buffer [heading_status->estimated_number -1]) < heading_parameter.estimated_yawrate_threshold)
   {
     heading->status.enabled_status = true;
   }
@@ -125,11 +126,15 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
         {
           if (std::abs(heading_status->correction_velocity_buffer [heading_status->estimated_number -1]) > heading_parameter.stop_judgment_velocity_threshold)
           {
-            provisional_heading_angle_buffer[i] = provisional_heading_angle_buffer[i-1] + ((heading_status->yawrate_buffer [i] + heading_status->yawrate_offset_buffer [i]) * (heading_status->time_buffer [i] - heading_status->time_buffer [i-1]));
+            provisional_heading_angle_buffer[i] = provisional_heading_angle_buffer[i-1] +
+              ((heading_status->yawrate_buffer [i] + heading_status->yawrate_offset_buffer [i]) *
+              (heading_status->time_buffer [i] - heading_status->time_buffer [i-1]));
           }
           else
           {
-            provisional_heading_angle_buffer[i] = provisional_heading_angle_buffer[i-1] + ((heading_status->yawrate_buffer [i] + heading_status->yawrate_offset_stop_buffer [i]) * (heading_status->time_buffer [i] - heading_status->time_buffer [i-1]));
+            provisional_heading_angle_buffer[i] = provisional_heading_angle_buffer[i-1] +
+              ((heading_status->yawrate_buffer [i] + heading_status->yawrate_offset_stop_buffer [i]) *
+              (heading_status->time_buffer [i] - heading_status->time_buffer [i-1]));
           }
         }
       }
@@ -152,7 +157,8 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
 
       for (i = 0; i < heading_status->estimated_number ; i++)
       {
-        base_heading_angle_buffer.push_back(heading_interpolate.heading_angle - provisional_heading_angle_buffer[index[index_length-1]] + provisional_heading_angle_buffer[i]);
+        base_heading_angle_buffer.push_back(heading_interpolate.heading_angle - provisional_heading_angle_buffer[index[index_length-1]] +
+          provisional_heading_angle_buffer[i]);
       }
 
       for (i = 0; i < index_length; i++)
@@ -169,7 +175,8 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
         base_heading_angle_buffer.clear();
         for (i = 0; i < heading_status->estimated_number ; i++)
         {
-          base_heading_angle_buffer.push_back(heading_angle_buffer2[index[index_length-1]] - provisional_heading_angle_buffer[index[index_length-1]] + provisional_heading_angle_buffer[i]);
+          base_heading_angle_buffer.push_back(heading_angle_buffer2[index[index_length-1]] -
+            provisional_heading_angle_buffer[index[index_length-1]] + provisional_heading_angle_buffer[i]);
         }
 
         diff_buffer.clear();
@@ -184,7 +191,8 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
         base_heading_angle_buffer2.clear();
         for (i = 0; i < heading_status->estimated_number ; i++)
         {
-          base_heading_angle_buffer2.push_back(tmp_heading_angle - provisional_heading_angle_buffer[index[index_length-1]] + provisional_heading_angle_buffer[i]);
+          base_heading_angle_buffer2.push_back(tmp_heading_angle - provisional_heading_angle_buffer[index[index_length-1]] +
+            provisional_heading_angle_buffer[i]);
         }
 
         diff_buffer.clear();
@@ -221,7 +229,8 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
         }
         else
         {
-          heading->heading_angle = tmp_heading_angle + (provisional_heading_angle_buffer[heading_status->estimated_number -1] - provisional_heading_angle_buffer[index[index_length-1]]);
+          heading->heading_angle = tmp_heading_angle + (provisional_heading_angle_buffer[heading_status->estimated_number -1] -
+            provisional_heading_angle_buffer[index[index_length-1]]);
         }
         heading->status.estimate_status = true;
       }
@@ -229,7 +238,9 @@ void heading_estimate_(sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor ve
   }
 }
 
-void heading_estimate(rtklib_msgs::RtklibNav rtklib_nav,sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor velocity_scale_factor,eagleye_msgs::YawrateOffset yawrate_offset_stop,eagleye_msgs::YawrateOffset yawrate_offset,eagleye_msgs::SlipAngle slip_angle,eagleye_msgs::Heading heading_interpolate,HeadingParameter heading_parameter, HeadingStatus* heading_status,eagleye_msgs::Heading* heading)
+void heading_estimate(rtklib_msgs::msg::RtklibNav rtklib_nav,sensor_msgs::msg::Imu imu, geometry_msgs::msg::TwistStamped velocity,
+  eagleye_msgs::msg::YawrateOffset yawrate_offset_stop,eagleye_msgs::msg::YawrateOffset yawrate_offset,eagleye_msgs::msg::SlipAngle slip_angle,
+  eagleye_msgs::msg::Heading heading_interpolate,HeadingParameter heading_parameter, HeadingStatus* heading_status,eagleye_msgs::msg::Heading* heading)
 {
   double ecef_vel[3];
   double ecef_pos[3];
@@ -244,7 +255,7 @@ void heading_estimate(rtklib_msgs::RtklibNav rtklib_nav,sensor_msgs::Imu imu,eag
   ecef_pos[0] = rtklib_nav.ecef_pos.x;
   ecef_pos[1] = rtklib_nav.ecef_pos.y;
   ecef_pos[2] = rtklib_nav.ecef_pos.z;
-  
+
   xyz2enu_vel(ecef_vel, ecef_pos, enu_vel);
 
   if (!std::isfinite(enu_vel[0])||!std::isfinite(enu_vel[1])||!std::isfinite(enu_vel[2]))
@@ -280,10 +291,12 @@ void heading_estimate(rtklib_msgs::RtklibNav rtklib_nav,sensor_msgs::Imu imu,eag
   heading_status->heading_angle_buffer .push_back(doppler_heading_angle);
   heading_status->gnss_status_buffer .push_back(gnss_status);
 
-  heading_estimate_(imu,velocity_scale_factor,yawrate_offset_stop,yawrate_offset,slip_angle,heading_interpolate,heading_parameter,heading_status,heading);
+  heading_estimate_(imu, velocity, yawrate_offset_stop, yawrate_offset, slip_angle, heading_interpolate, heading_parameter, heading_status, heading);
 }
 
-void heading_estimate(const nmea_msgs::Gprmc nmea_rmc,sensor_msgs::Imu imu,eagleye_msgs::VelocityScaleFactor velocity_scale_factor,eagleye_msgs::YawrateOffset yawrate_offset_stop,eagleye_msgs::YawrateOffset yawrate_offset,eagleye_msgs::SlipAngle slip_angle,eagleye_msgs::Heading heading_interpolate,HeadingParameter heading_parameter, HeadingStatus* heading_status,eagleye_msgs::Heading* heading)
+void heading_estimate(const nmea_msgs::msg::Gprmc nmea_rmc,sensor_msgs::msg::Imu imu, geometry_msgs::msg::TwistStamped velocity,
+  eagleye_msgs::msg::YawrateOffset yawrate_offset_stop,eagleye_msgs::msg::YawrateOffset yawrate_offset,eagleye_msgs::msg::SlipAngle slip_angle,
+  eagleye_msgs::msg::Heading heading_interpolate,HeadingParameter heading_parameter, HeadingStatus* heading_status,eagleye_msgs::msg::Heading* heading)
 {
   bool gnss_status;
   double doppler_heading_angle = 0.0;
@@ -301,9 +314,8 @@ void heading_estimate(const nmea_msgs::Gprmc nmea_rmc,sensor_msgs::Imu imu,eagle
     heading_status->rmc_time_last = nmea_rmc.utc_seconds;
   }
 
-  heading_status->heading_angle_buffer .push_back(doppler_heading_angle);
-  heading_status->gnss_status_buffer .push_back(gnss_status);
+  heading_status->heading_angle_buffer.push_back(doppler_heading_angle);
+  heading_status->gnss_status_buffer.push_back(gnss_status);
 
-  heading_estimate_(imu,velocity_scale_factor,yawrate_offset_stop,yawrate_offset,slip_angle,heading_interpolate,heading_parameter,heading_status,heading);
+  heading_estimate_(imu, velocity, yawrate_offset_stop, yawrate_offset, slip_angle, heading_interpolate, heading_parameter, heading_status, heading);
 }
-

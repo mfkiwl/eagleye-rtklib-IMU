@@ -50,7 +50,7 @@ double stringToGPSTime(std::string& input, double header_time)
   return GPSTime;
 }
 
-void nmea2fix_converter(const nmea_msgs::Sentence sentence, sensor_msgs::NavSatFix* fix, nmea_msgs::Gpgga* gga, nmea_msgs::Gprmc* rmc)
+void nmea2fix_converter(const nmea_msgs::msg::Sentence sentence, sensor_msgs::msg::NavSatFix* fix, nmea_msgs::msg::Gpgga* gga, nmea_msgs::msg::Gprmc* rmc)
 {
 
   std::vector<std::string> linedata,nmea_data;
@@ -58,6 +58,8 @@ void nmea2fix_converter(const nmea_msgs::Sentence sentence, sensor_msgs::NavSatF
   std::stringstream tmp_ss(sentence.sentence);
   int i;
   int index_length;
+
+  rclcpp::Time ros_clock(sentence.header.stamp);
 
   while (getline(tmp_ss, token1, '\n'))
   {
@@ -82,7 +84,7 @@ void nmea2fix_converter(const nmea_msgs::Sentence sentence, sensor_msgs::NavSatF
         gga->header = sentence.header;
         gga->message_id = nmea_data[0];
         // gga->utc_seconds = stod(nmea_data[1]);
-        if(!nmea_data[1].empty()) gga->utc_seconds = stringToGPSTime(nmea_data[1], sentence.header.stamp.toSec());
+        if(!nmea_data[1].empty()) gga->utc_seconds = stringToGPSTime(nmea_data[1], ros_clock.seconds());
         gga->lat = floor(stod(nmea_data[2])/100) + fmod(stod(nmea_data[2]),100)/60;
         gga->lat_dir = nmea_data[3];
         gga->lon = floor(stod(nmea_data[4])/100) + fmod(stod(nmea_data[4]),100)/60;
@@ -98,8 +100,16 @@ void nmea2fix_converter(const nmea_msgs::Sentence sentence, sensor_msgs::NavSatF
         gga->station_id = nmea_data[14].substr(0, nmea_data[14].find("*"));
 
         fix->header = sentence.header;
-        fix->latitude = gga->lat;
-        fix->longitude = gga->lon;
+        if (gga->lat_dir == "N") {
+          fix->latitude = gga->lat;
+        } else if (gga->lat_dir == "S") {
+          fix->latitude = -gga->lat;
+        }
+        if (gga->lon_dir == "E") {
+          fix->longitude = gga->lon;
+        } else if (gga->lon_dir == "W") {
+          fix->longitude = -gga->lon;
+        }
         fix->altitude = gga->alt + gga->undulation;
         fix->status.service = 1;
 
@@ -129,7 +139,7 @@ void nmea2fix_converter(const nmea_msgs::Sentence sentence, sensor_msgs::NavSatF
       {
         rmc->header = sentence.header;
         rmc->message_id = nmea_data[0];
-        if(!nmea_data[1].empty()) rmc->utc_seconds = stringToGPSTime(nmea_data[1], sentence.header.stamp.toSec());
+        if(!nmea_data[1].empty()) rmc->utc_seconds = stringToGPSTime(nmea_data[1], ros_clock.seconds());
         rmc->position_status = nmea_data[2];
         rmc->lat = floor(stod(nmea_data[3])/100) + fmod(stod(nmea_data[3]),100)/60;
         rmc->lat_dir = nmea_data[4];

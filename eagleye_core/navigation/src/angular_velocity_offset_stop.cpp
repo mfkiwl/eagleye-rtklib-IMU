@@ -28,10 +28,10 @@
  * Author MapIV Sekino
  */
 
- #include "coordinate/coordinate.hpp"
- #include "navigation/navigation.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-void angular_velocity_offset_stop_estimate(const geometry_msgs::TwistStamped velocity, const sensor_msgs::Imu imu, const AngularVelocityOffsetStopParameter angular_velocity_stop_parameter, AngularVelocityOffsetStopStatus* angular_velocity_stop_status, eagleye_msgs::AngularVelocityOffset* angular_velocity_offset_stop)
+void angular_velocity_offset_stop_estimate(const geometry_msgs::msg::TwistStamped velocity, const sensor_msgs::msg::Imu imu, const AngularVelocityOffsetStopParameter angular_velocity_stop_parameter, AngularVelocityOffsetStopStatus* angular_velocity_stop_status, eagleye_msgs::msg::AngularVelocityOffset* angular_velocity_offset_stop)
 {
 
   int i;
@@ -45,33 +45,15 @@ void angular_velocity_offset_stop_estimate(const geometry_msgs::TwistStamped vel
   // data buffer generate
   if (angular_velocity_stop_status->estimate_start_status == false)
   {
-    if (angular_velocity_stop_parameter.reverse_imu == false)
-    {
-      angular_velocity_stop_status->rollrate_buffer.push_back(imu.angular_velocity.x);
-      angular_velocity_stop_status->pitchrate_buffer.push_back(imu.angular_velocity.y);
-      angular_velocity_stop_status->yawrate_buffer.push_back(imu.angular_velocity.z);
-    }
-    else if (angular_velocity_stop_parameter.reverse_imu == true)
-    {
-      angular_velocity_stop_status->rollrate_buffer.push_back(imu.angular_velocity.x);
-      angular_velocity_stop_status->pitchrate_buffer.push_back(imu.angular_velocity.y);
-      angular_velocity_stop_status->yawrate_buffer.push_back(-1 * imu.angular_velocity.z);
-    }
+    angular_velocity_stop_status->rollrate_buffer.push_back(imu.angular_velocity.x);
+    angular_velocity_stop_status->pitchrate_buffer.push_back(imu.angular_velocity.y);
+    angular_velocity_stop_status->yawrate_buffer.push_back(imu.angular_velocity.z);
   }
   else if ( std::fabs(std::fabs(angular_velocity_stop_status->yawrate_offset_stop_last) - std::fabs(imu.angular_velocity.z)) < angular_velocity_stop_parameter.outlier_threshold && angular_velocity_stop_status->estimate_start_status == true)
   {
-    if (angular_velocity_stop_parameter.reverse_imu == false)
-    {
-      angular_velocity_stop_status->rollrate_buffer.push_back(imu.angular_velocity.x);
-      angular_velocity_stop_status->pitchrate_buffer.push_back(imu.angular_velocity.y);
-      angular_velocity_stop_status->yawrate_buffer.push_back(imu.angular_velocity.z);
-    }
-    else if (angular_velocity_stop_parameter.reverse_imu == true)
-    {
-      angular_velocity_stop_status->rollrate_buffer.push_back(imu.angular_velocity.x);
-      angular_velocity_stop_status->pitchrate_buffer.push_back(imu.angular_velocity.y);
-      angular_velocity_stop_status->yawrate_buffer.push_back(-1 * imu.angular_velocity.z);
-    }
+    angular_velocity_stop_status->rollrate_buffer.push_back(imu.angular_velocity.x);
+    angular_velocity_stop_status->pitchrate_buffer.push_back(imu.angular_velocity.y);
+    angular_velocity_stop_status->yawrate_buffer.push_back(imu.angular_velocity.z);
   }
 
   rollrate_buffer_length = std::distance(angular_velocity_stop_status->rollrate_buffer.begin(), angular_velocity_stop_status->rollrate_buffer.end());

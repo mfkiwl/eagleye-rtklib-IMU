@@ -28,41 +28,52 @@
  * Author MapIV Sekino
  */
 
-#include "ros/ros.h"
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-static ros::Publisher pub;
-static eagleye_msgs::VelocityScaleFactor velocity_scale_factor;
-static eagleye_msgs::Distance distance;
+rclcpp::Publisher<eagleye_msgs::msg::Distance>::SharedPtr _pub;
+static geometry_msgs::msg::TwistStamped _velocity;
+static eagleye_msgs::msg::StatusStamped _velocity_status;
+static eagleye_msgs::msg::Distance _distance;
 
-struct DistanceStatus distance_status;
+struct DistanceStatus _distance_status;
 
-void velocity_scale_factor_callback(const eagleye_msgs::VelocityScaleFactor::ConstPtr& msg)
+static bool _use_canless_mode;
+
+void velocity_status_callback(const eagleye_msgs::msg::StatusStamped::ConstSharedPtr msg)
 {
-  distance.header = msg->header;
-  distance.header.frame_id = "base_link";
-  velocity_scale_factor.header = msg->header;
-  velocity_scale_factor.scale_factor = msg->scale_factor;
-  velocity_scale_factor.correction_velocity = msg->correction_velocity;
-  velocity_scale_factor.status = msg->status;
-  distance_estimate(velocity_scale_factor,&distance_status,&distance);
+  _velocity_status = *msg;
+}
 
-  if(distance_status.time_last != 0)
+void velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
+{
+  if(_use_canless_mode && !_velocity_status.status.enabled_status) return;
+
+  _velocity = *msg;
+  _distance.header = msg->header;
+  _distance.header.frame_id = "base_link";
+  distance_estimate(_velocity, &_distance_status, &_distance);
+
+  if (_distance_status.time_last != 0)
   {
-    pub.publish(distance);
+    _pub->publish(_distance);
   }
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "distance");
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("distance");
 
-  ros::NodeHandle n;
-  ros::Subscriber sub1 = n.subscribe("velocity_scale_factor", 1000, velocity_scale_factor_callback);
-  pub = n.advertise<eagleye_msgs::Distance>("distance", 1000);
+  node->declare_parameter("use_canless_mode",_use_canless_mode);
+  node->get_parameter("use_canless_mode",_use_canless_mode);
 
-  ros::spin();
+  auto sub1 = node->create_subscription<geometry_msgs::msg::TwistStamped>("velocity", rclcpp::QoS(10), velocity_callback);
+  auto sub2 = node->create_subscription<eagleye_msgs::msg::StatusStamped>("velocity_status", rclcpp::QoS(10), velocity_status_callback);
+  _pub = node->create_publisher<eagleye_msgs::msg::Distance>("distance", rclcpp::QoS(10));
+
+  rclcpp::spin(node);
 
   return 0;
 }

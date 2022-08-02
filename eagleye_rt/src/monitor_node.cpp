@@ -28,679 +28,703 @@
  * Author MapIV Sekino
  */
 
-#include "ros/ros.h"
-#include "coordinate/coordinate.hpp"
-#include "navigation/navigation.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "eagleye_coordinate/eagleye_coordinate.hpp"
+#include "eagleye_navigation/eagleye_navigation.hpp"
 
-#include <boost/bind.hpp>
-#include <diagnostic_updater/diagnostic_updater.h>
+#include <diagnostic_updater/diagnostic_updater.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
-static sensor_msgs::Imu imu;
-static rtklib_msgs::RtklibNav rtklib_nav;
-static sensor_msgs::NavSatFix fix;
-static sensor_msgs::NavSatFix navsat_fix;
-static geometry_msgs::TwistStamped velocity;
-static eagleye_msgs::VelocityScaleFactor velocity_scale_factor;
-static eagleye_msgs::Distance distance;
-static eagleye_msgs::Heading heading_1st;
-static eagleye_msgs::Heading heading_interpolate_1st;
-static eagleye_msgs::Heading heading_2nd;
-static eagleye_msgs::Heading heading_interpolate_2nd;
-static eagleye_msgs::Heading heading_3rd;
-static eagleye_msgs::Heading heading_interpolate_3rd;
-static eagleye_msgs::YawrateOffset yawrate_offset_stop;
-static eagleye_msgs::YawrateOffset yawrate_offset_1st;
-static eagleye_msgs::YawrateOffset yawrate_offset_2nd;
-static eagleye_msgs::SlipAngle slip_angle;
-static eagleye_msgs::Height height;
-static eagleye_msgs::Pitching pitching;
-static eagleye_msgs::Position enu_relative_pos;
-static geometry_msgs::Vector3Stamped enu_vel;
-static eagleye_msgs::Position enu_absolute_pos;
-static eagleye_msgs::Position enu_absolute_pos_interpolate;
-static sensor_msgs::NavSatFix eagleye_fix;
-static geometry_msgs::TwistStamped eagleye_twist;
+static sensor_msgs::msg::Imu _imu;
+static rtklib_msgs::msg::RtklibNav _rtklib_nav;
+static sensor_msgs::msg::NavSatFix _rtklib_fix;
+static nmea_msgs::msg::Gpgga _gga;
+static geometry_msgs::msg::TwistStamped _velocity;
+static geometry_msgs::msg::TwistStamped _correction_velocity;
+static eagleye_msgs::msg::VelocityScaleFactor _velocity_scale_factor;
+static eagleye_msgs::msg::Distance _distance;
+static eagleye_msgs::msg::Heading _heading_1st;
+static eagleye_msgs::msg::Heading _heading_interpolate_1st;
+static eagleye_msgs::msg::Heading _heading_2nd;
+static eagleye_msgs::msg::Heading _heading_interpolate_2nd;
+static eagleye_msgs::msg::Heading _heading_3rd;
+static eagleye_msgs::msg::Heading _heading_interpolate_3rd;
+static eagleye_msgs::msg::YawrateOffset _yawrate_offset_stop;
+static eagleye_msgs::msg::YawrateOffset _yawrate_offset_1st;
+static eagleye_msgs::msg::YawrateOffset _yawrate_offset_2nd;
+static eagleye_msgs::msg::SlipAngle _slip_angle;
+static eagleye_msgs::msg::Height _height;
+static eagleye_msgs::msg::Pitching _pitching;
+static eagleye_msgs::msg::Rolling _rolling;
+static eagleye_msgs::msg::Position _enu_relative_pos;
+static geometry_msgs::msg::Vector3Stamped _enu_vel;
+static eagleye_msgs::msg::Position _enu_absolute_pos;
+static eagleye_msgs::msg::Position _enu_absolute_pos_interpolate;
+static sensor_msgs::msg::NavSatFix _eagleye_fix;
+static geometry_msgs::msg::TwistStamped _eagleye_twist;
 
-static bool navsat_fix_sub_status;
-static bool print_status;
+static geometry_msgs::msg::TwistStamped::ConstSharedPtr _comparison_velocity_ptr;
+static sensor_msgs::msg::Imu _corrected_imu;
 
-static double imu_time_last;
-static double rtklib_nav_time_last;
-static double navsat_fix_time_last;
-static double velocity_time_last;
-static double velocity_scale_factor_time_last;
-static double distance_time_last;
-static double heading_1st_time_last;
-static double heading_interpolate_1st_time_last;
-static double heading_2nd_time_last;
-static double heading_interpolate_2nd_time_last;
-static double heading_3rd_time_last;
-static double heading_interpolate_3rd_time_last;
-static double yawrate_offset_stop_time_last;
-static double yawrate_offset_1st_time_last;
-static double yawrate_offset_2nd_time_last;
-static double slip_angle_time_last;
-static double height_time_last;
-static double pitching_time_last;
-static double enu_vel_time_last;
-static double enu_absolute_pos_time_last;
-static double enu_absolute_pos_interpolate_time_last;
-static double eagleye_twist_time_last;
+static bool _gga_sub_status;
+static bool _print_status, _log_output_status, _log_header_make = false;
+static std::string _output_log_dir;
 
-static double update_rate = 10;
-static double th_gnss_deadrock_time = 10;
+static double _imu_time_last;
+static double _rtklib_nav_time_last;
+static double _navsat_gga_time_last;
+static double _velocity_time_last;
+static double _velocity_scale_factor_time_last;
+static double _distance_time_last;
+static double _heading_1st_time_last;
+static double _heading_interpolate_1st_time_last;
+static double _heading_2nd_time_last;
+static double _heading_interpolate_2nd_time_last;
+static double _heading_3rd_time_last;
+static double _heading_interpolate_3rd_time_last;
+static double _yawrate_offset_stop_time_last;
+static double _yawrate_offset_1st_time_last;
+static double _yawrate_offset_2nd_time_last;
+static double _slip_angle_time_last;
+static double _height_time_last;
+static double _pitching_time_last;
+static double _enu_vel_time_last;
+static double _enu_absolute_pos_time_last;
+static double _enu_absolute_pos_interpolate_time_last;
+static double _eagleye_twist_time_last;
 
-void rtklib_nav_callback(const rtklib_msgs::RtklibNav::ConstPtr& msg)
+bool _use_compare_yawrate = false;
+double _update_rate = 10.0;
+double _th_gnss_deadrock_time = 10;
+double _th_velocity_scale_factor_percent = 20;
+double _th_diff_rad_per_sec = 0.17453;
+int _num_continuous_abnormal_yawrate = 0;
+int _th_num_continuous_abnormal_yawrate = 10;
+
+std::shared_ptr<diagnostic_updater::Updater> updater_;
+
+void rtklib_nav_callback(const rtklib_msgs::msg::RtklibNav::ConstSharedPtr msg)
 {
-  rtklib_nav.header = msg->header;
-  rtklib_nav.tow = msg->tow;
-  rtklib_nav.ecef_pos = msg->ecef_pos;
-  rtklib_nav.ecef_vel = msg->ecef_vel;
-  rtklib_nav.status = msg->status;
+  _rtklib_nav = *msg;
 }
 
-void fix_callback(const sensor_msgs::NavSatFix::ConstPtr& msg)
+void rtklib_fix_callback(const sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
 {
-  fix.header = msg->header;
-  fix.status = msg->status;
-  fix.latitude = msg->latitude;
-  fix.longitude = msg->longitude;
-  fix.altitude = msg->altitude;
-  fix.position_covariance = msg->position_covariance;
-  fix.position_covariance_type = msg->position_covariance_type;
+  _rtklib_fix = *msg;
 }
 
-void navsatfix_fix_callback(const sensor_msgs::NavSatFix::ConstPtr& msg)
+void navsatfix_gga_callback(const nmea_msgs::msg::Gpgga::ConstSharedPtr msg)
 {
-  navsat_fix.header = msg->header;
-  navsat_fix.status = msg->status;
-  navsat_fix.latitude = msg->latitude;
-  navsat_fix.longitude = msg->longitude;
-  navsat_fix.altitude = msg->altitude;
-  navsat_fix.position_covariance = msg->position_covariance;
-  navsat_fix.position_covariance_type = msg->position_covariance_type;
-  navsat_fix_sub_status = true;
+  _gga = *msg;
+  _gga_sub_status = true;
 }
 
-void velocity_callback(const geometry_msgs::TwistStamped::ConstPtr& msg)
+void velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
 {
-  velocity.header = msg->header;
-  velocity.twist = msg->twist;
+  _velocity = *msg;
 }
 
-void velocity_scale_factor_callback(const eagleye_msgs::VelocityScaleFactor::ConstPtr& msg)
+void correction_velocity_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
 {
-  velocity_scale_factor.header = msg->header;
-  velocity_scale_factor.scale_factor = msg->scale_factor;
-  velocity_scale_factor.correction_velocity = msg->correction_velocity;
-  velocity_scale_factor.status = msg->status;
+  _correction_velocity = *msg;
 }
 
-void distance_callback(const eagleye_msgs::Distance::ConstPtr& msg)
+void velocity_scale_factor_callback(const eagleye_msgs::msg::VelocityScaleFactor::ConstSharedPtr msg)
 {
-  distance.header = msg->header;
-  distance.distance = msg->distance;
-  distance.status = msg->status;
+  _velocity_scale_factor = *msg;
 }
 
-void heading_1st_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void distance_callback(const eagleye_msgs::msg::Distance::ConstSharedPtr msg)
 {
-  heading_1st.header = msg->header;
-  heading_1st.heading_angle = msg->heading_angle;
-  heading_1st.status = msg->status;
+  _distance = *msg;
 }
 
-void heading_interpolate_1st_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void heading_1st_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  heading_interpolate_1st.header = msg->header;
-  heading_interpolate_1st.heading_angle = msg->heading_angle;
-  heading_interpolate_1st.status = msg->status;
+  _heading_1st = *msg;
 }
 
-void heading_2nd_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void heading_interpolate_1st_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  heading_2nd.header = msg->header;
-  heading_2nd.heading_angle = msg->heading_angle;
-  heading_2nd.status = msg->status;
+  _heading_interpolate_1st = *msg;
 }
 
-void heading_interpolate_2nd_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void heading_2nd_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  heading_interpolate_2nd.header = msg->header;
-  heading_interpolate_2nd.heading_angle = msg->heading_angle;
-  heading_interpolate_2nd.status = msg->status;
+  _heading_2nd = *msg;
 }
 
-void heading_3rd_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void heading_interpolate_2nd_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  heading_3rd.header = msg->header;
-  heading_3rd.heading_angle = msg->heading_angle;
-  heading_3rd.status = msg->status;
+  _heading_interpolate_2nd = *msg;
 }
 
-void heading_interpolate_3rd_callback(const eagleye_msgs::Heading::ConstPtr& msg)
+void heading_3rd_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  heading_interpolate_3rd.header = msg->header;
-  heading_interpolate_3rd.heading_angle = msg->heading_angle;
-  heading_interpolate_3rd.status = msg->status;
+  _heading_3rd = *msg;
 }
 
-void yawrate_offset_stop_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void heading_interpolate_3rd_callback(const eagleye_msgs::msg::Heading::ConstSharedPtr msg)
 {
-  yawrate_offset_stop.header = msg->header;
-  yawrate_offset_stop.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset_stop.status = msg->status;
+  _heading_interpolate_3rd = *msg;
 }
 
-void yawrate_offset_1st_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void yawrate_offset_stop_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  yawrate_offset_1st.header = msg->header;
-  yawrate_offset_1st.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset_1st.status = msg->status;
+  _yawrate_offset_stop = *msg;
 }
 
-void yawrate_offset_2nd_callback(const eagleye_msgs::YawrateOffset::ConstPtr& msg)
+void yawrate_offset_1st_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  yawrate_offset_2nd.header = msg->header;
-  yawrate_offset_2nd.yawrate_offset = msg->yawrate_offset;
-  yawrate_offset_2nd.status = msg->status;
+  _yawrate_offset_1st = *msg;
 }
 
-void slip_angle_callback(const eagleye_msgs::SlipAngle::ConstPtr& msg)
+void yawrate_offset_2nd_callback(const eagleye_msgs::msg::YawrateOffset::ConstSharedPtr msg)
 {
-  slip_angle.header = msg->header;
-  slip_angle.coefficient = msg->coefficient;
-  slip_angle.slip_angle = msg->slip_angle;
-  slip_angle.status = msg->status;
+  _yawrate_offset_2nd = *msg;
 }
 
-void enu_relative_pos_callback(const eagleye_msgs::Position::ConstPtr& msg)
+void slip_angle_callback(const eagleye_msgs::msg::SlipAngle::ConstSharedPtr msg)
 {
-  enu_relative_pos.header = msg->header;
-  enu_relative_pos.enu_pos = msg->enu_pos;
-  enu_relative_pos.ecef_base_pos = msg->ecef_base_pos;
-  enu_relative_pos.status = msg->status;
+  _slip_angle = *msg;
 }
 
-void enu_vel_callback(const geometry_msgs::Vector3Stamped::ConstPtr& msg)
+void enu_relative_pos_callback(const eagleye_msgs::msg::Position::ConstSharedPtr msg)
 {
-  enu_vel.header = msg->header;
-  enu_vel.vector = msg->vector;
+  _enu_relative_pos = *msg;
 }
 
-void enu_absolute_pos_callback(const eagleye_msgs::Position::ConstPtr& msg)
+void enu_vel_callback(const geometry_msgs::msg::Vector3Stamped::ConstSharedPtr msg)
 {
-  enu_absolute_pos.header = msg->header;
-  enu_absolute_pos.enu_pos = msg->enu_pos;
-  enu_absolute_pos.ecef_base_pos = msg->ecef_base_pos;
-  enu_absolute_pos.status = msg->status;
+  _enu_vel = *msg;
 }
 
-void height_callback(const eagleye_msgs::Height::ConstPtr& msg)
+void enu_absolute_pos_callback(const eagleye_msgs::msg::Position::ConstSharedPtr msg)
 {
-  height.header = msg->header;
-  height.height = msg->height;
-  height.status = msg->status;
+  _enu_absolute_pos = *msg;
 }
 
-void pitching_callback(const eagleye_msgs::Pitching::ConstPtr& msg)
+void height_callback(const eagleye_msgs::msg::Height::ConstSharedPtr msg)
 {
-  pitching.header = msg->header;
-  pitching.pitching_angle = msg->pitching_angle;
-  pitching.status = msg->status;
+  _height = *msg;
 }
 
-
-void enu_absolute_pos_interpolate_callback(const eagleye_msgs::Position::ConstPtr& msg)
+void pitching_callback(const eagleye_msgs::msg::Pitching::ConstSharedPtr msg)
 {
-  enu_absolute_pos_interpolate.header = msg->header;
-  enu_absolute_pos_interpolate.enu_pos = msg->enu_pos;
-  enu_absolute_pos_interpolate.ecef_base_pos = msg->ecef_base_pos;
-  enu_absolute_pos_interpolate.status = msg->status;
+  _pitching = *msg;
 }
 
-void eagleye_fix_callback(const sensor_msgs::NavSatFix::ConstPtr& msg)
+void rolling_callback(const eagleye_msgs::msg::Rolling::ConstSharedPtr msg)
 {
-  eagleye_fix.header = msg->header;
-  eagleye_fix.status = msg->status;
-  eagleye_fix.latitude = msg->latitude;
-  eagleye_fix.longitude = msg->longitude;
-  eagleye_fix.altitude = msg->altitude;
-  eagleye_fix.position_covariance = msg->position_covariance;
-  eagleye_fix.position_covariance_type = msg->position_covariance_type;
+  _rolling = *msg;
 }
 
-void eagleye_twist_callback(const geometry_msgs::TwistStamped::ConstPtr& msg)
+void enu_absolute_pos_interpolate_callback(const eagleye_msgs::msg::Position::ConstSharedPtr msg)
 {
-  eagleye_twist.header = msg->header;
-  eagleye_twist.twist = msg->twist;
+  _enu_absolute_pos_interpolate = *msg;
+}
+
+void eagleye_fix_callback(const sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
+{
+  _eagleye_fix = *msg;
+}
+
+void eagleye_twist_callback(const geometry_msgs::msg::TwistStamped::ConstSharedPtr msg)
+{
+  _eagleye_twist = *msg;
 }
 
 void imu_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_imu.header.stamp);
+  auto imu_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (imu_time_last == imu.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::STALE;
+  if (_imu_time_last == imu_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::STALE;
     msg = "not subscribed to topic";
   }
 
-  imu_time_last = imu.header.stamp.toSec();
+  _imu_time_last = imu_time;
   stat.summary(level, msg);
 }
 void rtklib_nav_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_rtklib_nav.header.stamp);
+  auto rtklib_nav_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (rtklib_nav_time_last - rtklib_nav.header.stamp.toSec() > th_gnss_deadrock_time) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_rtklib_nav_time_last - rtklib_nav_time > _th_gnss_deadrock_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
 
-  rtklib_nav_time_last = rtklib_nav.header.stamp.toSec();
+  _rtklib_nav_time_last = rtklib_nav_time;
   stat.summary(level, msg);
 }
-void navsat_fix_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
+void navsat_gga_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_gga.header.stamp);
+  auto navsat_gga_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (navsat_fix_time_last - navsat_fix.header.stamp.toSec() > th_gnss_deadrock_time || !navsat_fix_sub_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_navsat_gga_time_last - navsat_gga_time > _th_gnss_deadrock_time || !_gga_sub_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
 
-  navsat_fix_time_last = navsat_fix.header.stamp.toSec();
+  _navsat_gga_time_last = navsat_gga_time;
   stat.summary(level, msg);
 }
 void velocity_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_velocity.header.stamp);
+  auto velocity_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (velocity_time_last == velocity.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::STALE;
+  if (_velocity_time_last == velocity_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::STALE;
     msg = "not subscribed to topic";
   }
 
-  velocity_time_last = velocity.header.stamp.toSec();
+  _velocity_time_last = velocity_time;
   stat.summary(level, msg);
 }
 void velocity_scale_factor_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_velocity_scale_factor.header.stamp);
+  auto velocity_scale_factor_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (velocity_scale_factor_time_last == velocity_scale_factor.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_velocity_scale_factor_time_last == velocity_scale_factor_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(velocity_scale_factor.scale_factor)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_velocity_scale_factor.scale_factor)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!velocity_scale_factor.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_velocity_scale_factor.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  velocity_scale_factor_time_last = velocity_scale_factor.header.stamp.toSec();
+  _velocity_scale_factor_time_last = velocity_scale_factor_time;
   stat.summary(level, msg);
 }
 void distance_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_distance.header.stamp);
+  auto distance_time = ros_clock.seconds();
+  
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (distance_time_last == distance.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_distance_time_last == distance_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(distance.distance)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_distance.distance)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!distance.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_distance.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  distance_time_last = distance.header.stamp.toSec();
+  _distance_time_last = distance_time;
   stat.summary(level, msg);
 }
 void heading_1st_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_heading_1st.header.stamp);
+  auto heading_1st_time = ros_clock.seconds();
+  
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (!std::isfinite(heading_1st.heading_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  if (!std::isfinite(_heading_1st.heading_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (heading_1st_time_last - heading_1st.header.stamp.toSec() > th_gnss_deadrock_time) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (_heading_1st_time_last - heading_1st_time > _th_gnss_deadrock_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
-  else if (!heading_1st.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_heading_1st.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  heading_1st_time_last = heading_1st.header.stamp.toSec();
+  _heading_1st_time_last = heading_1st_time;
   stat.summary(level, msg);
 }
 void heading_interpolate_1st_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_heading_interpolate_1st.header.stamp);
+  auto heading_interpolate_1st_time = ros_clock.seconds();
+  
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (heading_interpolate_1st_time_last == heading_interpolate_1st.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_heading_interpolate_1st_time_last == heading_interpolate_1st_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(heading_interpolate_1st.heading_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_heading_interpolate_1st.heading_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!heading_interpolate_1st.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_heading_interpolate_1st.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  heading_interpolate_1st_time_last = heading_interpolate_1st.header.stamp.toSec();
+  _heading_interpolate_1st_time_last = heading_interpolate_1st_time;
   stat.summary(level, msg);
 }
 void heading_2nd_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_heading_2nd.header.stamp);
+  auto heading_2nd_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (!std::isfinite(heading_2nd.heading_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  if (!std::isfinite(_heading_2nd.heading_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (heading_2nd_time_last - heading_2nd.header.stamp.toSec() > th_gnss_deadrock_time) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (_heading_2nd_time_last - heading_2nd_time > _th_gnss_deadrock_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
-  else if (!heading_2nd.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_heading_2nd.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  heading_2nd_time_last = heading_2nd.header.stamp.toSec();
+  _heading_2nd_time_last = heading_2nd_time;
   stat.summary(level, msg);
 }
 void heading_interpolate_2nd_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_heading_interpolate_2nd.header.stamp);
+  auto heading_interpolate_2nd_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (heading_interpolate_2nd_time_last == heading_interpolate_2nd.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_heading_interpolate_2nd_time_last == heading_interpolate_2nd_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(heading_interpolate_2nd.heading_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_heading_interpolate_2nd.heading_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!heading_interpolate_2nd.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_heading_interpolate_2nd.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  heading_interpolate_2nd_time_last = heading_interpolate_2nd.header.stamp.toSec();
+  _heading_interpolate_2nd_time_last = heading_interpolate_2nd_time;
   stat.summary(level, msg);
 }
 void heading_3rd_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_heading_3rd.header.stamp);
+  auto heading_3rd_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (!std::isfinite(heading_3rd.heading_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  if (!std::isfinite(_heading_3rd.heading_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (heading_3rd_time_last - heading_3rd.header.stamp.toSec() > th_gnss_deadrock_time) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (_heading_3rd_time_last - heading_3rd_time > _th_gnss_deadrock_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
-  else if (!heading_3rd.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_heading_3rd.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  heading_3rd_time_last = heading_3rd.header.stamp.toSec();
+  _heading_3rd_time_last = heading_3rd_time;
   stat.summary(level, msg);
 }
 void heading_interpolate_3rd_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_heading_interpolate_3rd.header.stamp);
+  auto heading_interpolate_3rd_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (heading_interpolate_3rd_time_last == heading_interpolate_3rd.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_heading_interpolate_3rd_time_last == heading_interpolate_3rd_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(heading_interpolate_3rd.heading_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_heading_interpolate_3rd.heading_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!heading_interpolate_3rd.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_heading_interpolate_3rd.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  heading_interpolate_3rd_time_last = heading_interpolate_3rd.header.stamp.toSec();
+  _heading_interpolate_3rd_time_last = heading_interpolate_3rd_time;
   stat.summary(level, msg);
 }
 void yawrate_offset_stop_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_yawrate_offset_stop.header.stamp);
+  auto yawrate_offset_stop_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (yawrate_offset_stop_time_last == yawrate_offset_stop.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_yawrate_offset_stop_time_last == yawrate_offset_stop_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(yawrate_offset_stop.yawrate_offset)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_yawrate_offset_stop.yawrate_offset)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!yawrate_offset_stop.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_yawrate_offset_stop.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  yawrate_offset_stop_time_last = yawrate_offset_stop.header.stamp.toSec();
+  _yawrate_offset_stop_time_last = yawrate_offset_stop_time;
   stat.summary(level, msg);
 }
 void yawrate_offset_1st_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_yawrate_offset_1st.header.stamp);
+  auto yawrate_offset_1st_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (yawrate_offset_1st_time_last == yawrate_offset_1st.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_yawrate_offset_1st_time_last == yawrate_offset_1st_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(yawrate_offset_1st.yawrate_offset)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_yawrate_offset_1st.yawrate_offset)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!yawrate_offset_1st.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_yawrate_offset_1st.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  yawrate_offset_1st_time_last = yawrate_offset_1st.header.stamp.toSec();
+  _yawrate_offset_1st_time_last = yawrate_offset_1st_time;
   stat.summary(level, msg);
 }
 void yawrate_offset_2nd_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_yawrate_offset_2nd.header.stamp);
+  auto yawrate_offset_2nd_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (yawrate_offset_2nd_time_last == yawrate_offset_2nd.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_yawrate_offset_2nd_time_last == yawrate_offset_2nd_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(yawrate_offset_2nd.yawrate_offset)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_yawrate_offset_2nd.yawrate_offset)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!yawrate_offset_2nd.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_yawrate_offset_2nd.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  yawrate_offset_2nd_time_last = yawrate_offset_2nd.header.stamp.toSec();
+  _yawrate_offset_2nd_time_last = yawrate_offset_2nd_time;
   stat.summary(level, msg);
 }
 void slip_angle_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_slip_angle.header.stamp);
+  auto slip_angle_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (slip_angle_time_last == slip_angle.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_slip_angle_time_last == slip_angle_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(slip_angle.slip_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_slip_angle.slip_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (slip_angle.coefficient == 0) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (_slip_angle.coefficient == 0) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "/slip_angle/manual_coefficient is not set";
   }
-  else if (!slip_angle.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_slip_angle.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  slip_angle_time_last = slip_angle.header.stamp.toSec();
+  _slip_angle_time_last = slip_angle_time;
   stat.summary(level, msg);
 }
 void enu_vel_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_enu_vel.header.stamp);
+  auto enu_vel_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
- if (!std::isfinite(enu_vel.vector.x)||!std::isfinite(enu_vel.vector.y)||!std::isfinite(enu_vel.vector.z)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+ if (!std::isfinite(_enu_vel.vector.x)||!std::isfinite(_enu_vel.vector.y)||!std::isfinite(_enu_vel.vector.z)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else  if (enu_vel_time_last == enu_vel.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else  if (_enu_vel_time_last == enu_vel_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
 
-  enu_vel_time_last = enu_vel.header.stamp.toSec();
+  _enu_vel_time_last = enu_vel_time;
   stat.summary(level, msg);
 }
 void height_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_height.header.stamp);
+  auto height_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (height_time_last == height.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_height_time_last == height_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(height.height)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_height.height)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!height.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_height.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  height_time_last = height.header.stamp.toSec();
+  _height_time_last = height_time;
   stat.summary(level, msg);
 }
 void pitching_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_pitching.header.stamp);
+  auto pitching_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (pitching_time_last == pitching.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  if (_pitching_time_last == pitching_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed to topic";
   }
-  else if (!std::isfinite(pitching.pitching_angle)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_pitching.pitching_angle)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (!pitching.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_pitching.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  pitching_time_last = pitching.header.stamp.toSec();
+  _pitching_time_last = pitching_time;
   stat.summary(level, msg);
 }
 void enu_absolute_pos_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_enu_absolute_pos.header.stamp);
+  auto enu_absolute_pos_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (!std::isfinite(enu_absolute_pos.enu_pos.x)||!std::isfinite(enu_absolute_pos.enu_pos.y)||!std::isfinite(enu_absolute_pos.enu_pos.z)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  if (!std::isfinite(_enu_absolute_pos.enu_pos.x)||!std::isfinite(_enu_absolute_pos.enu_pos.y)||!std::isfinite(_enu_absolute_pos.enu_pos.z)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (enu_absolute_pos_time_last - enu_absolute_pos.header.stamp.toSec() > th_gnss_deadrock_time) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (_enu_absolute_pos_time_last - enu_absolute_pos_time > _th_gnss_deadrock_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
-  else if (!enu_absolute_pos.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_enu_absolute_pos.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  enu_absolute_pos_time_last = enu_absolute_pos.header.stamp.toSec();
+  _enu_absolute_pos_time_last = enu_absolute_pos_time;
   stat.summary(level, msg);
 }
 void enu_absolute_pos_interpolate_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_enu_absolute_pos_interpolate.header.stamp);
+  auto enu_absolute_pos_interpolate_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (!std::isfinite(enu_absolute_pos_interpolate.enu_pos.x)||!std::isfinite(enu_absolute_pos_interpolate.enu_pos.y)||!std::isfinite(enu_absolute_pos_interpolate.enu_pos.z)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  if (!std::isfinite(_enu_absolute_pos_interpolate.enu_pos.x)||!std::isfinite(_enu_absolute_pos_interpolate.enu_pos.y)||!std::isfinite(_enu_absolute_pos_interpolate.enu_pos.z)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
-  else if (enu_absolute_pos_interpolate_time_last == enu_absolute_pos_interpolate.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (_enu_absolute_pos_interpolate_time_last == enu_absolute_pos_interpolate_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
-  else if (!enu_absolute_pos_interpolate.status.enabled_status) {
-    level = diagnostic_msgs::DiagnosticStatus::WARN;
+  else if (!_enu_absolute_pos_interpolate.status.enabled_status) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
     msg = "estimates have not started yet";
   }
 
-  enu_absolute_pos_interpolate_time_last = enu_absolute_pos_interpolate.header.stamp.toSec();
+  _enu_absolute_pos_interpolate_time_last = enu_absolute_pos_interpolate_time;
   stat.summary(level, msg);
 }
 void twist_topic_checker(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
-  int8_t level = diagnostic_msgs::DiagnosticStatus::OK;
+  rclcpp::Time ros_clock(_eagleye_twist.header.stamp);
+  auto eagleye_twist_time = ros_clock.seconds();
+
+  int8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string msg = "OK";
 
-  if (eagleye_twist_time_last == eagleye_twist.header.stamp.toSec()) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  if (_eagleye_twist_time_last == eagleye_twist_time) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "not subscribed or deadlock of more than 10 seconds";
   }
-  else if (!std::isfinite(eagleye_twist.twist.linear.x)||!std::isfinite(eagleye_twist.twist.linear.y)||!std::isfinite(eagleye_twist.twist.linear.z)
-      ||!std::isfinite(eagleye_twist.twist.angular.x)||!std::isfinite(eagleye_twist.twist.angular.y)||!std::isfinite(eagleye_twist.twist.angular.z)) {
-    level = diagnostic_msgs::DiagnosticStatus::ERROR;
+  else if (!std::isfinite(_eagleye_twist.twist.linear.x)||!std::isfinite(_eagleye_twist.twist.linear.y)||!std::isfinite(_eagleye_twist.twist.linear.z)
+      ||!std::isfinite(_eagleye_twist.twist.angular.x)||!std::isfinite(_eagleye_twist.twist.angular.y)||!std::isfinite(_eagleye_twist.twist.angular.z)) {
+    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     msg = "invalid number";
   }
 
-  eagleye_twist_time_last = eagleye_twist.header.stamp.toSec();
+  _eagleye_twist_time_last = eagleye_twist_time;
   stat.summary(level, msg);
 }
 
@@ -712,34 +736,34 @@ void printStatus(void)
   std::cout << std::fixed;
 
   std::cout << "--- \033[1;34m imu(input)\033[m ------------------------------"<< std::endl;
-  std::cout<<"\033[1m linear_acceleration \033[mx "<<std::setprecision(6)<<imu.linear_acceleration.x<<" [m/s^2]"<<std::endl;
-  std::cout<<"\033[1m linear acceleration \033[my "<<std::setprecision(6)<<imu.linear_acceleration.y<<" [m/s^2]"<<std::endl;
-  std::cout<<"\033[1m linear acceleration \033[mz "<<std::setprecision(6)<<imu.linear_acceleration.z<<" [m/s^2]"<<std::endl;
-  std::cout<<"\033[1m angular velocity \033[mx "<<std::setprecision(6)<<imu.angular_velocity.x<<" [rad/s]"<<std::endl;
-  std::cout<<"\033[1m angular velocity \033[my "<<std::setprecision(6)<<imu.angular_velocity.y<<" [rad/s]"<<std::endl;
-  std::cout<<"\033[1m angular velocity \033[mz "<<std::setprecision(6)<<imu.angular_velocity.z<<" [rad/s]"<<std::endl;
+  std::cout<<"\033[1m linear_acceleration \033[mx "<<std::setprecision(6)<<_imu.linear_acceleration.x<<" [m/s^2]"<<std::endl;
+  std::cout<<"\033[1m linear acceleration \033[my "<<std::setprecision(6)<<_imu.linear_acceleration.y<<" [m/s^2]"<<std::endl;
+  std::cout<<"\033[1m linear acceleration \033[mz "<<std::setprecision(6)<<_imu.linear_acceleration.z<<" [m/s^2]"<<std::endl;
+  std::cout<<"\033[1m angular velocity \033[mx "<<std::setprecision(6)<<_imu.angular_velocity.x<<" [rad/s]"<<std::endl;
+  std::cout<<"\033[1m angular velocity \033[my "<<std::setprecision(6)<<_imu.angular_velocity.y<<" [rad/s]"<<std::endl;
+  std::cout<<"\033[1m angular velocity \033[mz "<<std::setprecision(6)<<_imu.angular_velocity.z<<" [rad/s]"<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m velocity(input)\033[m -------------------------"<< std::endl;
-  std::cout<<"\033[1m velocity \033[m"<<std::setprecision(4)<<velocity.twist.linear.x * 3.6<<" [km/h]"<<std::endl;
+  std::cout<<"\033[1m velocity \033[m"<<std::setprecision(4)<<_velocity.twist.linear.x * 3.6<<" [km/h]"<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m rtklib(input)\033[m ---------------------------"<< std::endl;
-  std::cout<<"\033[1m time of week  \033[m"<<rtklib_nav.tow<<" [ms]"<<std::endl;
-  std::cout<<"\033[1m latitude  \033[m"<<std::setprecision(8)<<rtklib_nav.status.latitude<<" [deg]"<<std::endl;
-  std::cout<<"\033[1m longitude  \033[m"<<std::setprecision(8)<<rtklib_nav.status.longitude<<" [deg]"<<std::endl;
-  std::cout<<"\033[1m altitude  \033[m"<<std::setprecision(4)<<rtklib_nav.status.altitude<<" [m]"<<std::endl;
+  std::cout<<"\033[1m time of week  \033[m"<<_rtklib_nav.tow<<" [ms]"<<std::endl;
+  std::cout<<"\033[1m latitude  \033[m"<<std::setprecision(8)<<_rtklib_nav.status.latitude<<" [deg]"<<std::endl;
+  std::cout<<"\033[1m longitude  \033[m"<<std::setprecision(8)<<_rtklib_nav.status.longitude<<" [deg]"<<std::endl;
+  std::cout<<"\033[1m altitude  \033[m"<<std::setprecision(4)<<_rtklib_nav.status.altitude<<" [m]"<<std::endl;
   std::cout << std::endl;
 
-  std::cout << "--- \033[1;34m navsat(input)\033[m ------------------------------"<< std::endl;
+  std::cout << "--- \033[1;34m gga(input)\033[m ------------------------------"<< std::endl;
 
-  if(navsat_fix_sub_status)
+  if (_gga_sub_status)
   {
-    std::cout<< "\033[1m rtk status \033[m "<<int(navsat_fix.status.status)<<std::endl;
-    std::cout<< "\033[1m rtk status \033[m "<<(navsat_fix.status.status ? "\033[1;31mNo Fix\033[m" : "\033[1;32mFix\033[m")<<std::endl;
-    std::cout<<"\033[1m latitude  \033[m"<<std::setprecision(8)<<navsat_fix.latitude<<" [deg]"<<std::endl;
-    std::cout<<"\033[1m longitude  \033[m"<<std::setprecision(8)<<navsat_fix.longitude<<" [deg]"<<std::endl;
-    std::cout<<"\033[1m altitude  \033[m"<<std::setprecision(4)<<navsat_fix.altitude<<" [m]"<<std::endl;
+    std::cout<< "\033[1m rtk status \033[m "<<int(_gga.gps_qual)<<std::endl;
+    std::cout<< "\033[1m rtk status \033[m "<<(int(_gga.gps_qual)!=4 ? "\033[1;31mNo Fix\033[m" : "\033[1;32mFix\033[m")<<std::endl;
+    std::cout<<"\033[1m latitude  \033[m"<<std::setprecision(8)<<_gga.lat<<" [deg]"<<std::endl;
+    std::cout<<"\033[1m longitude  \033[m"<<std::setprecision(8)<<_gga.lon<<" [deg]"<<std::endl;
+    std::cout<<"\033[1m altitude  \033[m"<<std::setprecision(4)<<_gga.alt + _gga.undulation<<" [m]"<<std::endl;
     std::cout << std::endl;
   }
   else
@@ -751,152 +775,362 @@ void printStatus(void)
 
 
   std::cout << "--- \033[1;34m velocity SF\033[m -----------------------------"<< std::endl;
-  std::cout<<"\033[1m scale factor \033[m "<<std::setprecision(4)<<velocity_scale_factor.scale_factor<<std::endl;
-  std::cout<<"\033[1m correction velocity \033[m "<<std::setprecision(4)<<velocity_scale_factor.correction_velocity.linear.x * 3.6<<" [km/h]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(velocity_scale_factor.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m scale factor \033[m "<<std::setprecision(4)<<_velocity_scale_factor.scale_factor<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_velocity_scale_factor.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m yawrate offset stop\033[m ---------------------"<< std::endl;
-  std::cout<<"\033[1m yawrate offset \033[m "<<std::setprecision(6)<<yawrate_offset_stop.yawrate_offset<<" [rad/s]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(yawrate_offset_stop.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m yawrate offset \033[m "<<std::setprecision(6)<<_yawrate_offset_stop.yawrate_offset<<" [rad/s]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_yawrate_offset_stop.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m yawrate offset\033[m --------------------------"<< std::endl;
-  std::cout<<"\033[1m yawrate offset \033[m "<<std::setprecision(6)<<yawrate_offset_2nd.yawrate_offset<<" [rad/s]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(yawrate_offset_2nd.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m yawrate offset \033[m "<<std::setprecision(6)<<_yawrate_offset_2nd.yawrate_offset<<" [rad/s]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_yawrate_offset_2nd.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m slip angle\033[m ------------------------------"<< std::endl;
-  std::cout<<"\033[1m coefficient \033[m "<<std::setprecision(6)<<slip_angle.coefficient<<std::endl;
-  std::cout<<"\033[1m slip angle \033[m "<<std::setprecision(6)<<slip_angle.slip_angle<<" [rad]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(slip_angle.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m coefficient \033[m "<<std::setprecision(6)<<_slip_angle.coefficient<<std::endl;
+  std::cout<<"\033[1m slip angle \033[m "<<std::setprecision(6)<<_slip_angle.slip_angle<<" [rad]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_slip_angle.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m heading\033[m ---------------------------------"<< std::endl;
-  std::cout<<"\033[1m heading \033[m "<<std::setprecision(6)<<heading_interpolate_3rd.heading_angle<<" [rad/s]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(heading_interpolate_3rd.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m heading \033[m "<<std::setprecision(6)<<_heading_interpolate_3rd.heading_angle<<" [rad/s]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_heading_interpolate_3rd.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m pitching\033[m --------------------------------"<< std::endl;
-  std::cout<<"\033[1m pitching \033[m "<<std::setprecision(6)<<pitching.pitching_angle<<" [rad]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(pitching.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m pitching \033[m "<<std::setprecision(6)<<_pitching.pitching_angle<<" [rad]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_pitching.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m height\033[m ----------------------------------"<< std::endl;
-  std::cout<<"\033[1m height \033[m "<<std::setprecision(4)<<height.height<<" [m]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(height.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m height \033[m "<<std::setprecision(4)<<_height.height<<" [m]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_height.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 
   std::cout << "--- \033[1;34m position\033[m --------------------------------"<< std::endl;
-  std::cout<<"\033[1m latitude  \033[m"<<std::setprecision(8)<<eagleye_fix.latitude<<" [deg]"<<std::endl;
-  std::cout<<"\033[1m longitude  \033[m"<<std::setprecision(8)<<eagleye_fix.longitude<<" [deg]"<<std::endl;
-  std::cout<<"\033[1m altitude  \033[m"<<std::setprecision(4)<<eagleye_fix.altitude<<" [m]"<<std::endl;
-  std::cout<< "\033[1m status enable \033[m "<<(enu_absolute_pos_interpolate.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
+  std::cout<<"\033[1m latitude  \033[m"<<std::setprecision(8)<<_eagleye_fix.latitude<<" [deg]"<<std::endl;
+  std::cout<<"\033[1m longitude  \033[m"<<std::setprecision(8)<<_eagleye_fix.longitude<<" [deg]"<<std::endl;
+  std::cout<<"\033[1m altitude  \033[m"<<std::setprecision(4)<<_eagleye_fix.altitude<<" [m]"<<std::endl;
+  std::cout<< "\033[1m status enable \033[m "<<(_enu_absolute_pos_interpolate.status.enabled_status ? "\033[1;32mTrue\033[m" : "\033[1;31mFalse\033[m")<<std::endl;
   std::cout << std::endl;
 }
 
-void timer_callback(const ros::TimerEvent& e, diagnostic_updater::Updater * updater_)
+void outputLog(void)
+{
+  if(!_log_header_make)
+  {
+  std::ofstream output_log_file(_output_log_dir, std::ios_base::trunc | std::ios_base::out);
+  std::cout << "Output file = eagleye_log.csv" << std::endl;
+  output_log_file << "timestamp,imu.angular_velocity.x,imu.angular_velocity.y,imu.angular_velocity.z,imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z\
+,rtklib_nav.tow,rtklib_nav.ecef_pos.x,rtklib_nav.ecef_pos.y,rtklib_nav.ecef_pos.z,rtklib_nav.ecef_vel.x,rtklib_nav.ecef_vel.y,rtklib_nav.ecef_vel.z,rtklib_nav.status.status.status,rtklib_nav.status.status.service,rtklib_nav.status.latitude,rtklib_nav.status.longitude,rtklib_nav.status.altitude\
+,velocity.twist.linear.x,velocity.twist.linear.y,velocity.twist.linear.z,velocity.twist.angular.x,velocity.twist.angular.y,velocity.twist.angular.z\
+,velocity_scale_factor.scale_factor,velocity_scale_factor.correction_velocity.linear.x,velocity_scale_factor.correction_velocity.linear.y,velocity_scale_factor.correction_velocity.linear.z,velocity_scale_factor.correction_velocity.angular.x,velocity_scale_factor.correction_velocity.angular.y,velocity_scale_factor.correction_velocity.angular.z,velocity_scale_factor.status.enabled_status,velocity_scale_factor.status.estimate_status\
+,distance.distance,distance.status.enabled_status,distance.status.estimate_status\
+,heading_1st.heading_angle,heading_1st.status.enabled_status,heading_1st.status.estimate_status\
+,heading_interpolate_1st.heading_angle,heading_interpolate_1st.status.enabled_status,heading_interpolate_1st.status.estimate_status\
+,heading_2nd.heading_angle,heading_2nd.status.enabled_status,heading_2nd.status.estimate_status\
+,heading_interpolate_2nd.heading_angle,heading_interpolate_2nd.status.enabled_status,heading_interpolate_2nd.status.estimate_status\
+,heading_3rd.heading_angle,heading_3rd.status.enabled_status,heading_3rd.status.estimate_status\
+,heading_interpolate_3rd.heading_angle,heading_interpolate_3rd.status.enabled_status,heading_interpolate_3rd.status.estimate_status\
+,yawrate_offset_stop.yawrate_offset,yawrate_offset_stop.status.enabled_status,yawrate_offset_stop.status.estimate_status\
+,yawrate_offset_1st.yawrate_offset,yawrate_offset_1st.status.enabled_status,yawrate_offset_1st.status.estimate_status\
+,yawrate_offset_2nd.yawrate_offset,yawrate_offset_2nd.status.enabled_status,yawrate_offset_2nd.status.estimate_status\
+,slip_angle.coefficient,slip_angle.slip_angle,slip_angle.status.enabled_status,slip_angle.status.estimate_status\
+,enu_vel.vector.x,enu_vel.vector.y,enu_vel.vector.z\
+,enu_absolute_pos.enu_pos.x,enu_absolute_pos.enu_pos.y,enu_absolute_pos.enu_pos.z,enu_absolute_pos.ecef_base_pos.x,enu_absolute_pos.ecef_base_pos.y,enu_absolute_pos.ecef_base_pos.z,enu_absolute_pos.status.enabled_status,enu_absolute_pos.status.estimate_status\
+,enu_absolute_pos_interpolate.enu_pos.x,enu_absolute_pos_interpolate.enu_pos.y,enu_absolute_pos_interpolate.enu_pos.z,enu_absolute_pos_interpolate.ecef_base_pos.x,enu_absolute_pos_interpolate.ecef_base_pos.y,enu_absolute_pos_interpolate.ecef_base_pos.z,enu_absolute_pos_interpolate.status.enabled_status,enu_absolute_pos_interpolate.status.estimate_status\
+,height.height,height.status.enabled_status,height.status.estimate_status\
+,pitching.pitching_angle,pitching.status.enabled_status,pitching.status.estimate_status\
+,acc_x_offset.acc_x_offset,acc_x_offset.status.enabled_status,acc_x_offset.status.estimate_status\
+,acc_x_scale_factor.acc_x_scale_factor,acc_x_scale_factor.status.enabled_status,acc_x_scale_factor.status.estimate_status\
+,rolling.rolling_angle,rolling.status.enabled_status,rolling.status.estimate_status\
+,gga_timestamp\
+,gga_llh.latitude,gga_llh.longitude,gga_llh.altitude\
+,gga_llh.gps_qual\
+,eagleye_pp_llh.latitude,eagleye_pp_llh.longitude,eagleye_pp_llh.altitude\
+,eagleye_pp_llh.orientation_covariance[0],eagleye_pp_llh.orientation_covariance[1],eagleye_pp_llh.orientation_covariance[2],eagleye_pp_llh.orientation_covariance[3],eagleye_pp_llh.orientation_covariance[4],eagleye_pp_llh.orientation_covariance[5],eagleye_pp_llh.orientation_covariance[6],eagleye_pp_llh.orientation_covariance[7],eagleye_pp_llh.orientation_covariance[8]\
+,eagleye_pp_llh.status\
+,eagleye_pp_llh.height_status\
+,enu_relative_pos.enu_pos.x,enu_relative_pos.enu_pos.y,enu_relative_pos.enu_pos.z\
+,enu_relative_pos.status.enabled_status\
+" << std::endl;
+  _log_header_make = true;
+  }
+  else
+  {
+  std::ofstream output_log_file(_output_log_dir, std::ios_base::app);
+  rclcpp::Time imu_clock(_imu.header.stamp);
+  double imu_time = imu_clock.seconds();
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << imu_time << ","; // timestamp
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _imu.angular_velocity.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _imu.angular_velocity.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _imu.angular_velocity.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _imu.linear_acceleration.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _imu.linear_acceleration.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _imu.linear_acceleration.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << _rtklib_nav.tow << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.ecef_pos.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.ecef_pos.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.ecef_pos.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.ecef_vel.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.ecef_vel.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.ecef_vel.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << int(_rtklib_nav.status.status.status) << ",";
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << _rtklib_nav.status.status.service << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.status.latitude << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.status.longitude << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rtklib_nav.status.altitude << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity.twist.linear.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity.twist.linear.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity.twist.linear.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity.twist.angular.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity.twist.angular.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity.twist.angular.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _velocity_scale_factor.scale_factor << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _correction_velocity.twist.linear.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _correction_velocity.twist.linear.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _correction_velocity.twist.linear.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _correction_velocity.twist.angular.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _correction_velocity.twist.angular.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _correction_velocity.twist.angular.z << ",";
+  output_log_file << (_velocity_scale_factor.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_velocity_scale_factor.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _distance.distance << ",";
+  output_log_file << (_distance.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_distance.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _heading_1st.heading_angle << ",";
+  output_log_file << (_heading_1st.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_heading_1st.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _heading_interpolate_1st.heading_angle << ",";
+  output_log_file << (_heading_interpolate_1st.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_heading_interpolate_1st.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _heading_2nd.heading_angle << ",";
+  output_log_file << (_heading_2nd.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_heading_2nd.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _heading_interpolate_2nd.heading_angle << ",";
+  output_log_file << (_heading_interpolate_2nd.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_heading_interpolate_2nd.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _heading_3rd.heading_angle << ",";
+  output_log_file << (_heading_3rd.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_heading_3rd.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _heading_interpolate_3rd.heading_angle << ",";
+  output_log_file << (_heading_interpolate_3rd.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_heading_interpolate_3rd.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _yawrate_offset_stop.yawrate_offset << ",";
+  output_log_file << (_yawrate_offset_stop.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_yawrate_offset_stop.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _yawrate_offset_1st.yawrate_offset << ",";
+  output_log_file << (_yawrate_offset_1st.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_yawrate_offset_1st.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _yawrate_offset_2nd.yawrate_offset << ",";
+  output_log_file << (_yawrate_offset_2nd.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_yawrate_offset_2nd.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _slip_angle.coefficient << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _slip_angle.slip_angle << ",";
+  output_log_file << (_slip_angle.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_slip_angle.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_vel.vector.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_vel.vector.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_vel.vector.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos.enu_pos.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos.enu_pos.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos.enu_pos.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos.ecef_base_pos.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos.ecef_base_pos.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos.ecef_base_pos.z << ",";
+  output_log_file << (_enu_absolute_pos.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_enu_absolute_pos.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos_interpolate.enu_pos.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos_interpolate.enu_pos.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos_interpolate.enu_pos.z << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos_interpolate.ecef_base_pos.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos_interpolate.ecef_base_pos.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_absolute_pos_interpolate.ecef_base_pos.z << ",";
+  output_log_file << (_enu_absolute_pos_interpolate.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_enu_absolute_pos_interpolate.status.estimate_status ? "1" : "0") << ",";
+  // output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << angular_velocity_offset_stop.rollrate_offset << ",";
+  // output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << angular_velocity_offset_stop.pitchrate_offset << ",";
+  // output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << angular_velocity_offset_stop.yawrate_offset << ",";
+  // output_log_file << (angular_velocity_offset_stop.status.enabled_status ? "1" : "0") << ",";
+  // output_log_file << (angular_velocity_offset_stop.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _height.height << ",";
+  output_log_file << (_height.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_height.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _pitching.pitching_angle << ",";
+  output_log_file << (_pitching.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_pitching.status.estimate_status ? "1" : "0") << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; // acc_x_offset
+  output_log_file << 0 << ","; // acc_x_offset.status.enabled_status
+  output_log_file << 0 << ","; // acc_x_offset.status.estimate_status
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; // acc_x_scale_factor.acc_x_scale_factor
+  output_log_file << 0 << ","; // acc_x_scale_factor.status.enabled_status
+  output_log_file << 0 << ","; // acc_x_scale_factor.status.estimate_status
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _rolling.rolling_angle << ",";
+  output_log_file << (_rolling.status.enabled_status ? "1" : "0") << ",";
+  output_log_file << (_rolling.status.estimate_status ? "1" : "0") << ",";
+  rclcpp::Time gga_clock(_gga.header.stamp);
+  double gga_time = gga_clock.seconds();
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << gga_time << ","; //timestamp
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _gga.lat << ","; //gga_llh.latitude
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _gga.lon << ","; //gga_llh.longitude
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _gga.alt +  _gga.undulation<< ","; //gga_llh.altitude
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << int(_gga.gps_qual) << ","; //gga_llh.gps_qual
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _eagleye_fix.latitude << ","; //eagleye_pp_llh.latitude
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _eagleye_fix.longitude << ","; //eagleye_pp_llh.longitude
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _eagleye_fix.altitude << ","; //eagleye_pp_llh.altitude
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[0]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[1]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[2]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[3]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[4]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[5]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[6]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[7]
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << 0 << ","; //eagleye_pp_llh.orientation_covariance[8]
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << 0 << ","; //eagleye_pp_llh.status
+  output_log_file << std::setprecision(std::numeric_limits<int>::max_digits10) << 0 << ","; //eagleye_pp_llh.status
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_relative_pos.enu_pos.x << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_relative_pos.enu_pos.y << ",";
+  output_log_file << std::setprecision(std::numeric_limits<double>::max_digits10) << _enu_relative_pos.enu_pos.z << ",";
+  output_log_file << (_enu_relative_pos.status.enabled_status ? "1" : "0");
+  output_log_file << "\n";
+  }
+  return;
+}
+
+void on_timer()
 {
   // Diagnostic Updater
   updater_->force_update();
 
 }
 
-void imu_callback(const sensor_msgs::Imu::ConstPtr& msg)
+void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr msg)
 {
-  imu.header = msg->header;
-  imu.orientation = msg->orientation;
-  imu.orientation_covariance = msg->orientation_covariance;
-  imu.angular_velocity = msg->angular_velocity;
-  imu.angular_velocity_covariance = msg->angular_velocity_covariance;
-  imu.linear_acceleration = msg->linear_acceleration;
-  imu.linear_acceleration_covariance = msg->linear_acceleration_covariance;
+  _imu.header = msg->header;
+  _imu.orientation = msg->orientation;
+  _imu.orientation_covariance = msg->orientation_covariance;
+  _imu.angular_velocity = msg->angular_velocity;
+  _imu.angular_velocity_covariance = msg->angular_velocity_covariance;
+  _imu.linear_acceleration = msg->linear_acceleration;
+  _imu.linear_acceleration_covariance = msg->linear_acceleration_covariance;
 
-  if(print_status)
+  if (_print_status)
   {
     printStatus();
+  }
+
+  if(_log_output_status)
+  {
+    outputLog();
   }
 
 }
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "monitor");
-
-  ros::NodeHandle n;
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("monitor");
+  updater_ = std::make_shared<diagnostic_updater::Updater>(node);
 
   std::string subscribe_twist_topic_name = "/can_twist";
-  std::string subscribe_imu_topic_name = "/imu/data_raw";
-  std::string subscribe_rtklib_nav_topic_name = "/rtklib_nav";
-  std::string subscribe_navsatfix_topic_name = "/navsatfix/fix";
 
-  n.getParam("twist_topic",subscribe_twist_topic_name);
-  n.getParam("imu_topic",subscribe_imu_topic_name);
-  n.getParam("rtklib_nav_topic",subscribe_rtklib_nav_topic_name);
-  n.getParam("navsatfix_topic",subscribe_navsatfix_topic_name);
-  n.getParam("monitor/print_status",print_status);
+  std::string subscribe_rtklib_nav_topic_name = "/rtklib_nav";
+  std::string subscribe_gga_topic_name = "/navsat/gga";
+
+  node->declare_parameter("twist_topic",subscribe_twist_topic_name);
+
+  node->declare_parameter("rtklib_nav_topic",subscribe_rtklib_nav_topic_name);
+  node->declare_parameter("gga_topic",subscribe_gga_topic_name);
+  node->declare_parameter("monitor.print_status",_print_status);
+  node->declare_parameter("monitor.log_output_status",_log_output_status);
+
+  node->get_parameter("twist_topic",subscribe_twist_topic_name);
+  node->get_parameter("rtklib_nav_topic",subscribe_rtklib_nav_topic_name);
+  node->get_parameter("gga_topic",subscribe_gga_topic_name);
+  node->get_parameter("monitor.print_status",_print_status);
+  node->get_parameter("monitor.log_output_status",_log_output_status);
 
   std::cout<< "subscribe_twist_topic_name "<<subscribe_twist_topic_name<<std::endl;
-  std::cout<< "subscribe_imu_topic_name "<<subscribe_imu_topic_name<<std::endl;
   std::cout<< "subscribe_rtklib_nav_topic_name "<<subscribe_rtklib_nav_topic_name<<std::endl;
-  std::cout<< "subscribe_navsatfix_topic_name "<<subscribe_navsatfix_topic_name<<std::endl;
-  std::cout<< "print_status "<<print_status<<std::endl;
+  std::cout<< "subscribe_gga_topic_name "<<subscribe_gga_topic_name<<std::endl;
+  std::cout<< "print_status "<<_print_status<<std::endl;
+  std::cout<< "log_output_status "<<_log_output_status<<std::endl;
 
   // // Diagnostic Updater
-  diagnostic_updater::Updater updater_;
-  updater_.setHardwareID("topic_checker");
-  updater_.add("eagleye_input_imu", imu_topic_checker);
-  updater_.add("eagleye_input_rtklib_nav", rtklib_nav_topic_checker);
-  updater_.add("eagleye_input_navsat_fix", navsat_fix_topic_checker);
-  updater_.add("eagleye_input_velocity", velocity_topic_checker);
-  updater_.add("eagleye_velocity_scale_factor", velocity_scale_factor_topic_checker);
-  updater_.add("eagleye_distance", distance_topic_checker);
-  updater_.add("eagleye_heading_1st", heading_1st_topic_checker);
-  updater_.add("eagleye_heading_interpolate_1st", heading_interpolate_1st_topic_checker);
-  updater_.add("eagleye_heading_2nd", heading_2nd_topic_checker);
-  updater_.add("eagleye_heading_interpolate_2nd", heading_interpolate_2nd_topic_checker);
-  updater_.add("eagleye_heading_3rd", heading_3rd_topic_checker);
-  updater_.add("eagleye_heading_interpolate_3rd", heading_interpolate_3rd_topic_checker);
-  updater_.add("eagleye_yawrate_offset_stop", yawrate_offset_stop_topic_checker);
-  updater_.add("eagleye_yawrate_offset_1st", yawrate_offset_1st_topic_checker);
-  updater_.add("eagleye_yawrate_offset_2nd", yawrate_offset_2nd_topic_checker);
-  updater_.add("eagleye_slip_angle", slip_angle_topic_checker);
-  updater_.add("eagleye_enu_vel", enu_vel_topic_checker);
-  updater_.add("eagleye_height", height_topic_checker);
-  updater_.add("eagleye_pitching", pitching_topic_checker);
-  updater_.add("eagleye_enu_absolute_pos", enu_absolute_pos_topic_checker);
-  updater_.add("eagleye_enu_absolute_pos_interpolate", enu_absolute_pos_interpolate_topic_checker);
-  updater_.add("eagleye_twist", twist_topic_checker);
+  updater_->setHardwareID("eagleye_topic_checker");
+  updater_->add("eagleye_input_imu", imu_topic_checker);
+  updater_->add("eagleye_input_rtklib_nav", rtklib_nav_topic_checker);
+  updater_->add("eagleye_input_navsat_gga", navsat_gga_topic_checker);
+  updater_->add("eagleye_input_velocity", velocity_topic_checker);
+  updater_->add("eagleye_velocity_scale_factor", velocity_scale_factor_topic_checker);
+  updater_->add("eagleye_distance", distance_topic_checker);
+  updater_->add("eagleye_heading_1st", heading_1st_topic_checker);
+  updater_->add("eagleye_heading_interpolate_1st", heading_interpolate_1st_topic_checker);
+  updater_->add("eagleye_heading_2nd", heading_2nd_topic_checker);
+  updater_->add("eagleye_heading_interpolate_2nd", heading_interpolate_2nd_topic_checker);
+  updater_->add("eagleye_heading_3rd", heading_3rd_topic_checker);
+  updater_->add("eagleye_heading_interpolate_3rd", heading_interpolate_3rd_topic_checker);
+  updater_->add("eagleye_yawrate_offset_stop", yawrate_offset_stop_topic_checker);
+  updater_->add("eagleye_yawrate_offset_1st", yawrate_offset_1st_topic_checker);
+  updater_->add("eagleye_yawrate_offset_2nd", yawrate_offset_2nd_topic_checker);
+  updater_->add("eagleye_slip_angle", slip_angle_topic_checker);
+  updater_->add("eagleye_enu_vel", enu_vel_topic_checker);
+  updater_->add("eagleye_height", height_topic_checker);
+  updater_->add("eagleye_pitching", pitching_topic_checker);
+  updater_->add("eagleye_enu_absolute_pos", enu_absolute_pos_topic_checker);
+  updater_->add("eagleye_enu_absolute_pos_interpolate", enu_absolute_pos_interpolate_topic_checker);
+  updater_->add("eagleye_twist", twist_topic_checker);
 
-  ros::Subscriber sub1 = n.subscribe(subscribe_imu_topic_name, 1000, imu_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub2 = n.subscribe(subscribe_rtklib_nav_topic_name, 1000, rtklib_nav_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub3 = n.subscribe("rtklib/fix", 1000, fix_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub4 = n.subscribe(subscribe_navsatfix_topic_name, 1000, navsatfix_fix_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub5 = n.subscribe(subscribe_twist_topic_name, 1000, velocity_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub6 = n.subscribe("velocity_scale_factor", 1000, velocity_scale_factor_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub7 = n.subscribe("distance", 1000, distance_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub8 = n.subscribe("heading_1st", 1000, heading_1st_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub9 = n.subscribe("heading_interpolate_1st", 1000, heading_interpolate_1st_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub10 = n.subscribe("heading_2nd", 1000, heading_2nd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub11 = n.subscribe("heading_interpolate_2nd", 1000, heading_interpolate_2nd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub12 = n.subscribe("heading_3rd", 1000, heading_3rd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub13 = n.subscribe("heading_interpolate_3rd", 1000, heading_interpolate_3rd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub14 = n.subscribe("yawrate_offset_stop", 1000, yawrate_offset_stop_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub15 = n.subscribe("yawrate_offset_1st", 1000, yawrate_offset_1st_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub16 = n.subscribe("yawrate_offset_2nd", 1000, yawrate_offset_2nd_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub17 = n.subscribe("slip_angle", 1000, slip_angle_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub18 = n.subscribe("enu_relative_pos", 1000, enu_relative_pos_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub19 = n.subscribe("enu_vel", 1000, enu_vel_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub20 = n.subscribe("height", 1000, height_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub21 = n.subscribe("pitching", 1000, pitching_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub22 = n.subscribe("enu_absolute_pos", 1000, enu_absolute_pos_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub23 = n.subscribe("enu_absolute_pos_interpolate", 1000, enu_absolute_pos_interpolate_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub24 = n.subscribe("fix", 1000, eagleye_fix_callback, ros::TransportHints().tcpNoDelay());
-  ros::Subscriber sub25 = n.subscribe("twist", 1000, eagleye_twist_callback, ros::TransportHints().tcpNoDelay());
+  time_t time_;
+  time_ = time(NULL);
+  std::stringstream time_ss;
+  time_ss << time_;
+  std::string time_str = time_ss.str();
+  _output_log_dir = ament_index_cpp::get_package_share_directory("eagleye_rt") + "/log/eagleye_log_" + time_str + ".csv";
+  if(_log_output_status) std::cout << _output_log_dir << std::endl;
 
-  ros::Timer timer = n.createTimer(ros::Duration(1/update_rate), boost::bind(timer_callback,_1, &updater_));
+  auto sub1 = node->create_subscription<sensor_msgs::msg::Imu>("imu/data_tf_converted", 1000, imu_callback);
+  auto sub2 = node->create_subscription<rtklib_msgs::msg::RtklibNav>(subscribe_rtklib_nav_topic_name, 1000, rtklib_nav_callback);
+  auto sub3 = node->create_subscription<sensor_msgs::msg::NavSatFix>("rtklib/fix", rclcpp::QoS(10), rtklib_fix_callback);
+  auto sub4 = node->create_subscription<nmea_msgs::msg::Gpgga>(subscribe_gga_topic_name, 1000, navsatfix_gga_callback);
+  auto sub5 = node->create_subscription<geometry_msgs::msg::TwistStamped>(subscribe_twist_topic_name, 1000, velocity_callback);
+  auto sub6 = node->create_subscription<eagleye_msgs::msg::VelocityScaleFactor>("velocity_scale_factor", rclcpp::QoS(10), velocity_scale_factor_callback);
+  auto sub7 = node->create_subscription<eagleye_msgs::msg::Distance>("distance", rclcpp::QoS(10), distance_callback);
+  auto sub8 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_1st", rclcpp::QoS(10), heading_1st_callback);
+  auto sub9 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_interpolate_1st", rclcpp::QoS(10), heading_interpolate_1st_callback);
+  auto sub10 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_2nd", rclcpp::QoS(10), heading_2nd_callback);
+  auto sub11 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_interpolate_2nd", rclcpp::QoS(10), heading_interpolate_2nd_callback);
+  auto sub12 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_3rd", rclcpp::QoS(10), heading_3rd_callback);
+  auto sub13 = node->create_subscription<eagleye_msgs::msg::Heading>("heading_interpolate_3rd", rclcpp::QoS(10), heading_interpolate_3rd_callback);
+  auto sub14 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_stop", rclcpp::QoS(10), yawrate_offset_stop_callback);
+  auto sub15 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_1st", rclcpp::QoS(10), yawrate_offset_1st_callback);
+  auto sub16 = node->create_subscription<eagleye_msgs::msg::YawrateOffset>("yawrate_offset_2nd", rclcpp::QoS(10), yawrate_offset_2nd_callback);
+  auto sub17 = node->create_subscription<eagleye_msgs::msg::SlipAngle>("slip_angle", rclcpp::QoS(10), slip_angle_callback);
+  auto sub18 = node->create_subscription<eagleye_msgs::msg::Position>("enu_relative_pos", rclcpp::QoS(10), enu_relative_pos_callback);
+  auto sub19 = node->create_subscription<geometry_msgs::msg::Vector3Stamped>("enu_vel", rclcpp::QoS(10), enu_vel_callback);
+  auto sub20 = node->create_subscription<eagleye_msgs::msg::Height>("height", rclcpp::QoS(10), height_callback);
+  auto sub21 = node->create_subscription<eagleye_msgs::msg::Pitching>("pitching", rclcpp::QoS(10), pitching_callback);
+  auto sub22 = node->create_subscription<eagleye_msgs::msg::Position>("enu_absolute_pos", rclcpp::QoS(10), enu_absolute_pos_callback);
+  auto sub23 = node->create_subscription<eagleye_msgs::msg::Position>("enu_absolute_pos_interpolate", rclcpp::QoS(10), enu_absolute_pos_interpolate_callback);
+  auto sub24 = node->create_subscription<sensor_msgs::msg::NavSatFix>("fix", rclcpp::QoS(10), eagleye_fix_callback);
+  auto sub25 = node->create_subscription<geometry_msgs::msg::TwistStamped>("twist", rclcpp::QoS(10), eagleye_twist_callback);
+  auto sub26 = node->create_subscription<eagleye_msgs::msg::Rolling>("rolling", rclcpp::QoS(10), rolling_callback);
 
-  ros::spin();
+  double delta_time = 1.0 / static_cast<double>(_update_rate);
+
+  auto timer_callback = std::bind(on_timer);
+  const auto period_ns =
+    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(delta_time));
+  auto timer = std::make_shared<rclcpp::GenericTimer<decltype(timer_callback)>>(
+    node->get_clock(), period_ns, std::move(timer_callback),
+    node->get_node_base_interface()->get_context());
+  node->get_node_timers_interface()->add_timer(timer, nullptr);
+  rclcpp::spin(node);
 
   return 0;
 }
